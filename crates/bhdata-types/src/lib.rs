@@ -15,7 +15,7 @@ pub mod ids;
 pub mod time;
 pub mod version;
 
-pub use config::{Config, ConfigError, Durability, SLOT_COUNT};
+pub use config::{Config, ConfigError, Durability, EngineConfig, SLOT_COUNT};
 pub use error::{Error, ErrorKind, Result};
 pub use ids::{LoginId, RequestId, SubjectId, TransferId};
 pub use time::{Clock, ManualClock, SystemClock, Timestamp};

@@ -11,10 +11,10 @@ Design v1.0 is approved. Milestone M0 (workspace skeleton) is done: the workspac
 M1 (engine manager and installer) is built in three slices, each ending with `scripts/check.sh` clean and a zip:
 
 - **A. `bhdata-helper`** (the small root-run helper): done, except that the real PostgreSQL install through it is checked in slice C.
-- **B. `bhdata-engine`** (install, start, supervise, update PostgreSQL instances): next.
+- **B. `bhdata-engine`** (install, start, supervise, update PostgreSQL instances): done, except the run against PostgreSQL 17, which is checked on your machine (the sandbox only had 16).
 - **C. `packaging/`** (installer, uninstaller, systemd unit, `sudoers`) and the clean-VM run.
 
-The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only the helper has code so far; the other crates are still empty.
+The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only the helper and the engine have code so far; the other crates are still empty.
 
 ## Building and checking
 

@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 bhdata-types = { workspace = true }
 bhdata-pg = { workspace = true }
+thiserror = { workspace = true }

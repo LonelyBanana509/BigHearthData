@@ -24,6 +24,12 @@ M1 is built in **three slices**, each ending with `scripts/check.sh` clean and a
 7. **No dependencies beyond the standard library** in `bhdata-helper`. It is the one root-run program in the project.
 8. **No lock file in the helper.** `apt-get` and `dpkg` already lock against each other; a second lock would add stale-lock failures for little gain.
 9. **Audit trail.** `sudo` logs every call to the helper. The helper's own steps go to stderr (the journal). The control plane's audit log (M5, M8) is where admin actions are recorded.
+10. **Instances listen on a Unix socket only, no network port** (slice B; this was the open question). `listen_addresses` is empty, the socket folder is mode 0700, and the port number only names the socket file. This is the strongest reading of "reachable only from the data layer's own components". If a later milestone needs a loopback port, it is one setting.
+11. **Login is by operating-system identity ("peer").** `pg_hba.conf` has one rule: the service user, over the local socket. The instance's superuser is that same user. How the restricted roles of M2 log in is decided at M2, not guessed now.
+12. **Start, stop and status go through `pg_ctl`; health is `pg_isready`.** `pg_ctl` finds a server left over from an earlier run through its pid file, so one is reused, never started twice. The engine opens no database connection.
+13. **The engine rewrites its settings at every start** (`bhdata.conf`, `pg_hba.conf`, one `include` line), so a changed config takes effect on restart. Relaxed durability only turns off the wait for the sync at commit; `fsync` is on in every mode.
+14. **Restart rules.** A missing process is restarted at once. A process that is there but silent is restarted after 3 failed checks in a row. A server that says it is starting up (crash recovery) is left alone. Restarts back off from 1 s to 60 s and the count resets when the server answers.
+15. **Minor-release updates: one attempt per day, inside a one-hour window** (`engine.maintenance_hour_utc`, default 03:00 UTC). A failed attempt is not retried until the next day. Instances restart one at a time, only when the installed minor is newer than the one they started with. A different major is never applied.
 
 ## 2. Slice A: `bhdata-helper` (built)
 
@@ -40,9 +46,16 @@ Rules, all enforced in code and covered by tests:
 
 Exit codes (stable; the installer and server read them): `0` ok, `2` usage, `3` not allowed to run here (not root, or unsafe location), `4` refused (unsupported platform, existing cluster), `5` a step failed (a command, or the after-check), `6` internal (file error).
 
-## 3. Slice B: `bhdata-engine` (plan)
+## 3. Slice B: `bhdata-engine` (built)
 
-`instance.rs` (initdb, private port and data directory, no default cluster), `supervise.rs` (start, stop, health check, restart with backoff), `install.rs` (calls the helper's `install-pinned`), `update.rs` (calls `update` in the maintenance window, then restarts instances). Health checks use `pg_isready` or a plain socket connection, not a Postgres client, because `bhdata-pg` stays empty until M2 (dependency rules, plan section 5). Open for that slice: whether instances listen on a Unix socket only or on a private loopback port (design: "reachable only from the data layer's own components").
+- `instance.rs`: the instance's folders and settings, and `init` (`initdb` with peer login, UTF-8, data checksums). Refuses to run as root, to touch a folder that is not a cluster, and to reuse a data folder of another major version.
+- `supervise.rs`: `start`, `stop`, `restart`, `health`, and the watcher thread (`Supervisor`) with the rules in decision 14. It records the version each instance was started with.
+- `install.rs`: calls the helper (`sudo -n` for `update` and `restart`, directly for `install-pinned`). Tests compare the helper's exit codes, action names and `PG_MAJOR` with the helper's source, so the two cannot drift apart.
+- `update.rs`: the daily window logic (`Updater::tick`) and `SystemUpdateOps`.
+- `bhdata-types` gains `EngineConfig` (`[engine]`: `base_dir`, `port`, `max_connections`, `maintenance_hour_utc`, `locale`).
+- `tests/real_postgres.rs` (ignored by default) runs the engine against a real server.
+
+Not wired up yet: nothing calls `Supervisor` or `Updater` until the server exists (M2 and later). Slice B gives them as library pieces.
 
 ## 4. Slice C: `packaging/` and the VM run (plan)
 
@@ -55,6 +68,7 @@ Exit codes (stable; the installer and server read them): `0` ok, `2` usage, `3` 
 | Action parsing, command sequences, file edit, refusals, exit codes | Unit tests (`cargo test`) | `scripts/check.sh` |
 | Helper refuses non-root and open locations; runs real commands from a root-owned path | Run for real as root | Not needed again |
 | `apt.postgresql.org` repository setup, the `-y` flag, real `postgresql-17` install | Not possible (the sandbox cannot reach that repository) | Slice C, on a fresh VM or WSL2 distro |
+| Engine against a real PostgreSQL: init, private settings, start, kill -9 recovery, restart, stop | `tests/real_postgres.rs` ran for real on PostgreSQL **16** (the sandbox's archive has no 17) | Run it with 17: `BHDATA_PG_BIN=/usr/lib/postgresql/17/bin cargo test -p bhdata-engine --test real_postgres -- --ignored` as a non-root user |
 | Kill and reboot recovery, existing PostgreSQL untouched, uninstall | Not possible | Slice C |
 | `cargo deny` | Not possible (tool needs a newer Rust than the sandbox has) | `scripts/check.sh` |
 

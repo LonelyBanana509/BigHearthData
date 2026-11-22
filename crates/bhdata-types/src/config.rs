@@ -2,7 +2,7 @@
 //!
 //! Every value that the design states a default for is here: cache entries expire after 2 seconds,
 //! a replica more than 1 second behind leaves rotation, request ids are kept for 24 hours, history
-//! rows for 90 days, 7 daily backup copies, full durability. Config for a crate that does not exist
+//! rows for 90 days, 7 daily backup copies, full durability, an update window at 03:00 UTC. Config for a crate that does not exist
 //! yet is added with that crate's milestone, not guessed now.
 //!
 //! The structs read from TOML (the config format), accept any subset of keys, and refuse unknown
@@ -12,6 +12,7 @@
 //! Time values are plain numbers with the unit in the name (`ttl_ms`, `retry_window_secs`), which
 //! is how they look in a TOML file. Use the accessor methods to get a [`Duration`].
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,14 @@ pub enum ConfigError {
     NotPositive {
         /// The dotted name of the setting, as written in the config file.
         field: &'static str,
+    },
+    /// A value outside what the setting allows.
+    #[error("{field} {reason}")]
+    Invalid {
+        /// The dotted name of the setting, as written in the config file.
+        field: &'static str,
+        /// What is wrong, as a short phrase that follows the name ("must be ...").
+        reason: &'static str,
     },
 }
 
@@ -142,6 +151,60 @@ impl Default for BackupConfig {
     }
 }
 
+/// The engine manager: where the private PostgreSQL instance lives and when it may be updated
+/// (design section 3, "Engine manager").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EngineConfig {
+    /// Folder that holds the instance's data, socket and logs. The service user must own it.
+    pub base_dir: PathBuf,
+    /// Port number of the first shard's instance. The instance listens on a Unix socket only, so
+    /// this number is not reachable from the network; it only names the socket file.
+    pub port: u16,
+    /// Most connections the instance accepts (the connection budget is checked against it).
+    pub max_connections: u32,
+    /// The hour of the day, in UTC (0 to 23), when the maintenance window opens. The window is one
+    /// hour long. Minor-release updates restart the instance inside it.
+    pub maintenance_hour_utc: u8,
+    /// Locale the instance's database is created with. Fixed once the database exists.
+    pub locale: String,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        EngineConfig {
+            base_dir: PathBuf::from("/var/lib/bhdata"),
+            port: 54_320,
+            max_connections: 100,
+            maintenance_hour_utc: 3,
+            locale: "C.UTF-8".to_string(),
+        }
+    }
+}
+
+impl EngineConfig {
+    /// Checks the engine values that `serde` cannot.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let bad = |field, reason| Err(ConfigError::Invalid { field, reason });
+        if !self.base_dir.is_absolute() {
+            return bad("engine.base_dir", "must be an absolute path");
+        }
+        if self.port < 1_024 {
+            return bad("engine.port", "must be 1024 or higher");
+        }
+        if self.max_connections < 10 {
+            return bad("engine.max_connections", "must be at least 10");
+        }
+        if self.maintenance_hour_utc > 23 {
+            return bad("engine.maintenance_hour_utc", "must be between 0 and 23");
+        }
+        if self.locale.is_empty() {
+            return bad("engine.locale", "must not be empty");
+        }
+        Ok(())
+    }
+}
+
 /// The whole config. Every field has a default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -156,6 +219,8 @@ pub struct Config {
     pub requests: RequestConfig,
     /// Backups.
     pub backup: BackupConfig,
+    /// The engine manager.
+    pub engine: EngineConfig,
 }
 
 impl Config {
@@ -179,7 +244,7 @@ impl Config {
                 return Err(ConfigError::NotPositive { field });
             }
         }
-        Ok(())
+        self.engine.validate()
     }
 }
 
@@ -246,6 +311,75 @@ mod tests {
         };
         let text = toml::to_string(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), c);
+    }
+
+    #[test]
+    fn engine_defaults_are_valid_and_private() {
+        let e = EngineConfig::default();
+        assert_eq!(e.base_dir, PathBuf::from("/var/lib/bhdata"));
+        assert_eq!(e.port, 54_320);
+        assert_eq!(e.maintenance_hour_utc, 3);
+        assert_eq!(e.validate(), Ok(()));
+    }
+
+    #[test]
+    fn engine_values_out_of_range_are_named() {
+        let cases: [(&str, EngineConfig); 5] = [
+            (
+                "engine.base_dir",
+                EngineConfig {
+                    base_dir: PathBuf::from("relative/dir"),
+                    ..EngineConfig::default()
+                },
+            ),
+            (
+                "engine.port",
+                EngineConfig {
+                    port: 80,
+                    ..EngineConfig::default()
+                },
+            ),
+            (
+                "engine.max_connections",
+                EngineConfig {
+                    max_connections: 3,
+                    ..EngineConfig::default()
+                },
+            ),
+            (
+                "engine.maintenance_hour_utc",
+                EngineConfig {
+                    maintenance_hour_utc: 24,
+                    ..EngineConfig::default()
+                },
+            ),
+            (
+                "engine.locale",
+                EngineConfig {
+                    locale: String::new(),
+                    ..EngineConfig::default()
+                },
+            ),
+        ];
+        for (name, engine) in cases {
+            match engine.validate() {
+                Err(ConfigError::Invalid { field, .. }) => assert_eq!(field, name),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn engine_settings_read_from_toml_and_reach_config_validation() {
+        let c: Config =
+            toml::from_str("[engine]\nmaintenance_hour_utc = 5\nport = 6000\n").unwrap();
+        assert_eq!(c.engine.maintenance_hour_utc, 5);
+        assert_eq!(c.engine.port, 6000);
+        assert_eq!(c.engine.max_connections, 100);
+        assert_eq!(c.validate(), Ok(()));
+        let c: Config = toml::from_str("[engine]\nmaintenance_hour_utc = 30\n").unwrap();
+        assert!(c.validate().is_err());
+        assert!(toml::from_str::<Config>("[engine]\nlisten_address = \"0.0.0.0\"\n").is_err());
     }
 
     #[test]
