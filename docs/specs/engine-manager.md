@@ -7,8 +7,8 @@ M1 is built in **three slices**, each ending with `scripts/check.sh` clean and a
 | Slice | Crates / folders | Status |
 |---|---|---|
 | A | `bhdata-helper` | Built |
-| B | `bhdata-engine` | Not started |
-| C | `packaging/` and the clean-VM run | Not started |
+| B | `bhdata-engine` | Built |
+| C | `packaging/` and the clean-VM run | Built; clean-VM run passed 2026-11-22 (Ubuntu on WSL2, PostgreSQL 17.12) |
 
 ## 1. Decisions in this spec (change any of them)
 
@@ -20,7 +20,7 @@ M1 is built in **three slices**, each ending with `scripts/check.sh` clean and a
 3. **Only `update` and `restart` are for the running server.** The server calls them through `sudo`, with one `sudoers` line per action (written in slice C). `install-pinned` is never in `sudoers`.
 4. **The helper refuses when a Debian-managed cluster of the pinned major already exists** (`/etc/postgresql/17/<name>`), for both `install-pinned` and `update`. A package install can restart such a cluster, and the acceptance suite says an existing PostgreSQL must be left untouched. The data layer's own instances are made with `initdb` and never appear there.
 5. **Platform: `ID=debian` or `ID=ubuntu` in `/etc/os-release`, on amd64 or arm64.** Derivatives (Mint and similar) are refused, since the repository setup is only supported on the two.
-6. **The repository is added with the script that `postgresql-common` ships** (`apt.postgresql.org.sh -y`). The helper does not download or verify keys itself. The `-y` flag is from memory and could not be tried here (see section 5); if the script rejects it, the fix is one line in `actions.rs`.
+6. **The repository is added with the script that `postgresql-common` ships** (`apt.postgresql.org.sh -y`). The helper does not download or verify keys itself. The `-y` flag was confirmed on a real system (section 4).
 7. **No dependencies beyond the standard library** in `bhdata-helper`. It is the one root-run program in the project.
 8. **No lock file in the helper.** `apt-get` and `dpkg` already lock against each other; a second lock would add stale-lock failures for little gain.
 9. **Audit trail.** `sudo` logs every call to the helper. The helper's own steps go to stderr (the journal). The control plane's audit log (M5, M8) is where admin actions are recorded.
@@ -57,9 +57,20 @@ Exit codes (stable; the installer and server read them): `0` ok, `2` usage, `3` 
 
 Not wired up yet: nothing calls `Supervisor` or `Updater` until the server exists (M2 and later). Slice B gives them as library pieces.
 
-## 4. Slice C: `packaging/` and the VM run (plan)
+## 4. Slice C: `packaging/` and the VM run (built; the VM run is still to do)
 
-`install.sh`, `uninstall.sh`, the systemd unit `bhdata-server.service`, the `sudoers` file (exact lines for `update` and `restart`, nothing else), the service user, and the root-owned install location for the helper. Uninstall removes binaries, helper and service; data only with an explicit flag. Then the acceptance suite from plan section 7.
+Files in `packaging/`: `install.sh`, `uninstall.sh`, `bhdata-server.service`, `bhdata.sudoers`, `config.toml`.
+
+- **What the service runs at M1.** `bhdata-server` is the engine host (`bhdata_engine::host`): read `/etc/bhdata/config.toml`, create the instance once, start it, watch it, apply minor updates in the window. The real server (M5) grows around it. `bhdatactl` has one command, `status`. Both binaries are thin; the code is in the engine crate so no new crate edges are needed.
+- **Layout.** Helper, server in `/usr/libexec/bhdata/` (root-owned, 755); `bhdatactl` in `/usr/local/bin/`; config `/etc/bhdata/config.toml` (root-owned, kept on reinstall); data `/var/lib/bhdata` (service user, 750); unit `/etc/systemd/system/bhdata-server.service`; `/etc/sudoers.d/bhdata` (0440, checked with `visudo -c` before it is installed).
+- **Service user** `bhdata`: system user, no login shell, home is the data folder. Reused if it already exists.
+- **sudoers** has one rule: `bhdata ALL=(root) NOPASSWD:` the helper with `update`, and the helper with `restart`. `install-pinned` is not in it.
+- **Unit.** Runs as `bhdata`, `Restart=always`, no start limit. `NoNewPrivileges` and `ProtectSystem` are left out on purpose, because they stop `sudo` from working; a test fails if they appear.
+- **install.sh** needs root, systemd and apt. It takes the programs from `--bin-dir`, or next to itself, or `../target/release`. Order: user, programs, config and data folder, PostgreSQL through the helper, sudoers, unit, start, then waits up to 90 s for `bhdatactl status` to say the instance accepts connections. Safe to re-run. If the helper refuses (an existing PostgreSQL 17 cluster, or an unsupported system), it stops before the unit starts.
+- **uninstall.sh** stops and removes the service, sudoers file, programs. It keeps data, config and the user unless `--purge-data` is given. It never removes PostgreSQL packages or the apt repository.
+- **Checked in the sandbox:** syntax, `visudo -c`, the unit against `systemd-analyze` (only the missing-binary warning), argument handling, uninstall with and without `--purge-data` on fake state, and tests that the files agree with the code's constants. **Not possible here:** the real install (no systemd, no access to the PostgreSQL repository). That is the clean-VM run.
+
+**Clean-VM result (2026-11-22).** Ubuntu on WSL2 with systemd: `scripts/check.sh` clean (including `cargo deny` and `cargo audit`); `install.sh` works from nothing and again on top of itself; the real `apt.postgresql.org.sh -y` works, so decision 6 is confirmed; PostgreSQL 17.12 started and `bhdatactl status` healthy; kill recovery, reboot recovery and uninstall (with and without `--purge-data`) behaved as specified. Kali was refused by design (decision 5).
 
 ## 5. What is checked where
 

@@ -20,6 +20,11 @@ use std::process::{Command, Stdio};
 use crate::error::EngineError;
 use crate::sys;
 
+/// The service unit's name; it must equal `SERVICE_UNIT` in `bhdata-helper/src/actions.rs`.
+pub const SERVICE_UNIT_NAME: &str = "bhdata-server.service";
+/// Where the installer puts the helper. The `sudoers` file and the service unit use these paths
+/// too; tests compare them (see `host.rs`).
+pub const HELPER_PATH: &str = "/usr/libexec/bhdata/bhdata-helper";
 const SUDO: &str = "/usr/bin/sudo";
 const TOOL_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -330,6 +335,10 @@ mod tests {
         assert_eq!(
             constant(&actions, "pub const PG_MAJOR"),
             crate::PG_MAJOR.to_string()
+        );
+        assert_eq!(
+            constant(&actions, "pub const SERVICE_UNIT"),
+            SERVICE_UNIT_NAME
         );
     }
 }

@@ -81,6 +81,7 @@ dependencies = [
  "bhdata-pg",
  "bhdata-types",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

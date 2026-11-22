@@ -1,0 +1,4 @@
+# Installed as /etc/sudoers.d/bhdata (mode 0440) by install.sh.
+# The service user may run exactly these two helper actions as root, with no password. Nothing else.
+# install-pinned is deliberately not here: only the installer, already root, runs it.
+bhdata ALL=(root) NOPASSWD: /usr/libexec/bhdata/bhdata-helper update, /usr/libexec/bhdata/bhdata-helper restart

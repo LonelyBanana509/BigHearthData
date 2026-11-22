@@ -5,6 +5,8 @@
 //! * [`supervise`]: start it, watch it, restart it with backoff when it dies or stops answering.
 //! * [`install`]: call the privileged helper (`bhdata-helper`) for package actions.
 //! * [`update`]: minor-release updates, inside the maintenance window, one instance at a time.
+//! * [`host`]: what the service runs at M1: load the config, start and watch the instance, apply
+//!   updates in the window; plus the report behind `bhdatactl status`.
 //!
 //! Only this crate and `bhdata-pg` talk to PostgreSQL (plan section 5). This crate never opens a
 //! database connection: health checks use `pg_isready`, because `bhdata-pg` is built at M2.
@@ -12,6 +14,7 @@
 //! Nothing here runs as root. The one root step, installing packages, is the helper's job.
 
 pub mod error;
+pub mod host;
 pub mod install;
 pub mod instance;
 pub mod supervise;

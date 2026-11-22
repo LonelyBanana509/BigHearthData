@@ -1,0 +1,19 @@
+# /etc/bhdata/config.toml
+# Every value below is the default. Delete any line to get the default; unknown keys are errors.
+# The service reads this file at start: run `sudo systemctl restart bhdata-server` after a change.
+
+# "full": a result is returned only after its commit is synced. "relaxed" is faster, and a crash
+# can lose acknowledged writes.
+durability = "full"
+
+[engine]
+# Folder for the instance's data, socket and logs. Owned by the service user. The path must stay
+# short (the socket path has an operating-system limit).
+base_dir = "/var/lib/bhdata"
+# Names the socket file only; the instance has no network port.
+port = 54320
+max_connections = 100
+# Hour (UTC, 0 to 23) when the one-hour window for minor-release updates opens.
+maintenance_hour_utc = 3
+# Fixed once the database exists.
+locale = "C.UTF-8"

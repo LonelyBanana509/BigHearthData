@@ -1,0 +1,24 @@
+# Installed as /etc/systemd/system/bhdata-server.service by install.sh.
+[Unit]
+Description=BigHearthData server (engine host and private PostgreSQL)
+After=network.target
+# Never give up restarting: the acceptance suite expects the server to come back every time.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=bhdata
+Group=bhdata
+ExecStart=/usr/libexec/bhdata/bhdata-server --config /etc/bhdata/config.toml
+Restart=always
+RestartSec=2
+# Stopping the service stops the private PostgreSQL with it (same control group); give it time to
+# shut down cleanly.
+TimeoutStopSec=120
+UMask=0077
+# NoNewPrivileges= and ProtectSystem= are left out on purpose. The server calls the helper through
+# sudo (bhdata-helper update, bhdata-helper restart), and both settings would stop sudo from
+# getting root. The service is kept small by running as an ordinary user with two sudoers lines.
+
+[Install]
+WantedBy=multi-user.target

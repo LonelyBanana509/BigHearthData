@@ -1,10 +1,11 @@
 //! bhdatactl: install, start, status, register, import, backup, restore, stress.
 //!
-//! Empty at M0: the real code arrives with milestone M8.
+//! At M1 only `status` exists (`bhdata_engine::host::ctl_main`); the rest arrives with milestone M8.
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    eprintln!("bhdatactl: not implemented yet (milestone M8)");
-    ExitCode::from(2)
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    bhdata_engine::host::ctl_main(&args)
 }

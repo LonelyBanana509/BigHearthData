@@ -19,6 +19,7 @@ The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only t
 ## Building and checking
 
 Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo install --locked cargo-deny cargo-audit`).
+On a fresh Debian or Ubuntu machine, `./bootstrap.sh` installs all of that and builds (`--check` also runs the full gate, `--install` also installs the service).
 
 - `scripts/check.sh` runs format, build, test, clippy, the dependency check, `cargo deny` and `cargo audit`. Every slice ends with it clean.
 - `scripts/check-deps.sh` compares the crate-to-crate dependencies with `deps.allow` and fails on any extra edge.
