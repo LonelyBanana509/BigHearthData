@@ -15,3 +15,6 @@ bhdata-types = { workspace = true }
 bhdata-pg = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

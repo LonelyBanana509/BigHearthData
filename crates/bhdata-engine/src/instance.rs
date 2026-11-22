@@ -293,6 +293,7 @@ port = {port}\n\
 unix_socket_directories = '{run}'\n\
 unix_socket_permissions = 0700\n\
 max_connections = {max_connections}\n\
+superuser_reserved_connections = {reserved}\n\
 fsync = on\n\
 full_page_writes = on\n\
 synchronous_commit = {synchronous_commit}\n\
@@ -306,17 +307,26 @@ log_rotation_size = 0\n",
         port = spec.port,
         run = spec.run_dir().display(),
         max_connections = spec.max_connections,
+        reserved = bhdata_pg::conn_budget::SUPERUSER_RESERVED_CONNECTIONS,
     )
 }
 
-/// `pg_hba.conf`: only the service user, over the local socket, checked by the operating system.
+/// `pg_hba.conf`: the local socket only, checked by the operating system, with the `bhdata` map
+/// deciding which database roles the service user may log in as (see [`render_ident`]).
 /// Everything else is rejected, because nothing else matches.
-pub fn render_hba(spec: &InstanceSpec) -> String {
+pub fn render_hba() -> String {
     format!(
-        "# Managed by bhdata-engine. Only the service user, over the local socket.\n\
-local   all   {}   peer\n",
-        spec.superuser
+        "# Managed by bhdata-engine. Local socket only; pg_ident.conf says which roles may log in.\n{}\n",
+        bhdata_pg::roles::hba_line()
     )
+}
+
+/// `pg_ident.conf`: the service user as itself (for the bootstrap) and as each of the four login
+/// roles of `bhdata-pg`. They all map from the one operating-system user: this limits what a bug
+/// in a pool can do, and does not isolate processes.
+pub fn render_ident(spec: &InstanceSpec) -> Result<String, EngineError> {
+    bhdata_pg::roles::ident_map(&spec.superuser)
+        .map_err(|e| EngineError::invalid("service user name", e.to_string()))
 }
 
 /// `text` with the `include` line for `bhdata.conf` at its end, unless it is already there. It is
@@ -399,7 +409,8 @@ pub fn apply_settings(spec: &InstanceSpec) -> Result<(), EngineError> {
     let conf = data.join("postgresql.conf");
     write_if_changed(&conf, &with_include(&read_text(&conf)?))?;
     write_if_changed(&data.join("bhdata.conf"), &render_settings(spec))?;
-    write_if_changed(&data.join("pg_hba.conf"), &render_hba(spec))
+    write_if_changed(&data.join("pg_ident.conf"), &render_ident(spec)?)?;
+    write_if_changed(&data.join("pg_hba.conf"), &render_hba())
 }
 
 /// Fails with [`EngineError::VersionMismatch`] when the data folder was made by another major
@@ -631,16 +642,59 @@ mod tests {
     }
 
     #[test]
-    fn hba_has_one_rule_and_it_is_peer_for_the_service_user() {
-        let text = render_hba(&spec_in(Path::new("/var/lib/bhdata")));
+    fn hba_has_one_rule_and_it_is_peer_through_the_bhdata_map() {
+        let text = render_hba();
         let rules: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(rules.len(), 1);
         assert_eq!(
             rules[0].split_whitespace().collect::<Vec<_>>(),
-            ["local", "all", "bhdata", "peer"]
+            ["local", "all", "all", "peer", "map=bhdata"]
         );
         assert!(!text.contains("trust"));
         assert!(!text.contains("host"));
+    }
+
+    #[test]
+    fn ident_maps_the_service_user_to_itself_and_the_four_login_roles_only() {
+        let text = render_ident(&spec_in(Path::new("/var/lib/bhdata"))).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(lines.len(), 5);
+        assert!(lines.iter().all(|l| l.starts_with("bhdata bhdata ")));
+        for role in [
+            "bhdata",
+            "bhdata_recipe",
+            "bhdata_sql",
+            "bhdata_reader",
+            "bhdata_admin",
+        ] {
+            assert!(
+                lines.iter().any(|l| l.ends_with(&format!(" {role}"))),
+                "{role}"
+            );
+        }
+        assert!(!text.contains("bhdata_owner"));
+    }
+
+    #[test]
+    fn a_service_user_name_that_needs_quoting_is_refused() {
+        let mut spec = spec_in(Path::new("/var/lib/bhdata"));
+        spec.superuser = "bad user".into();
+        assert!(matches!(
+            render_ident(&spec),
+            Err(EngineError::Invalid {
+                what: "service user name",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_reserved_superuser_connections_come_from_the_one_constant() {
+        let text = render_settings(&spec_in(Path::new("/var/lib/bhdata")));
+        assert!(text.contains(&format!(
+            "superuser_reserved_connections = {}\n",
+            bhdata_pg::conn_budget::SUPERUSER_RESERVED_CONNECTIONS
+        )));
     }
 
     #[test]
@@ -676,7 +730,7 @@ mod tests {
             .ends_with("include 'bhdata.conf'\n"));
         assert_eq!(
             fs::read_to_string(data.join("pg_hba.conf")).unwrap(),
-            render_hba(&spec)
+            render_hba()
         );
         assert_eq!(
             fs::read_to_string(data.join("bhdata.conf")).unwrap(),
