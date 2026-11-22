@@ -1,4 +1,4 @@
-# Recipe compiler and registry (v0.2)
+# Recipe compiler and registry (v0.3)
 
 Status: decisions confirmed by the owner (section 8). Written before M3. Input: the format in `recipe-format.md`. Crates: `bhdata-schema` (tables), `bhdata-recipe` (compiler and plan), `bhdata-control` (durable registry). Design sections 5, 6 and 9.
 
@@ -68,3 +68,21 @@ Each step compiles to one fixed template with `$n` parameters; identifiers come 
 3. Identical re-registration succeeds and returns the same version.
 4. The three starter recipes (`spend`, `give`, `daily`) are the frozen examples, with `add_interest` as a fourth for the `decimal` rules.
 5. Limits are config settings (`[recipes]`), checked at registration.
+
+## 9. Rules fixed while building the checks (slice B2a, v0.3)
+
+The table in section 2 did not say these; the code and its tests now do.
+
+1. **Order.** Tables, then columns, then keys, each over the whole recipe; then step by step the types, rounding and bounds; then the result, the error names, and last the lane. The first failure is the rejection.
+2. **Keys.** `read`, `add`, `set` reach only the row of the subject (or counterparty) table itself. `insert` and `list` reach only a child table whose owner is that subject table. Anything else is `not_by_key`, including a `read` of a global table: recipes cannot read global tables yet (see open question below).
+3. **`add` and bounds.** The column is already inside `min`/`max`, so only the side the amount can push across needs a named error: `below` if `by` can be negative and the column has a `min`, `above` if `by` can be positive and it has a `max`. The range of `by` comes from the arguments' bounds and the columns' bounds, as exact arithmetic.
+4. **`set` and `insert` have no named error,** so the value must provably stay inside the column's `min`/`max`, else `bounds`.
+5. **`insert` names every required column.** A column that is not nullable and has no default must be in `set`; else `type`.
+6. **Rounding.** A decimal stored in a column with fewer digits, or in an `i64` column, is `rounding`. `/` is allowed only as a direct argument of `round`, and never by a literal zero.
+7. **Names.** Arguments, values from `read` (`to.<column>` for the counterparty) and `list` names share one namespace; a clash is `type`. A value is usable only after the step that reads it.
+8. **Built-in error names.** `overflow` only as `above`; `insufficient_funds` only as `below` or in a `check`; every other built-in name is refused (`error_name`). Recipe-defined names are free.
+9. **Result size** is estimated as: `i64` and `timestamp` 8 bytes, `decimal` 16, `bool` 1, `text` 4 bytes per character of `max_len`, `bytes` its `max_len`; a `list` is its row size times its `limit`. Over the limit is `too_big`.
+10. **Derived stores** are a stub (`DerivedStore`: name, windows, freshest promise in ms) until the derived stores exist. A `read_derived` is the whole recipe: no other step, no counterparty.
+
+**Open question.** Decision 2 means a recipe cannot look up a price in a global table such as `shop`. Allowing a `read` of a global table by an argument key (a value the caller passes, never one read from a row) fits the "reached by key" rule and the global tables' purpose; it is left out of B2a until you decide.
+
