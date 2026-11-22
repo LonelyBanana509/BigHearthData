@@ -48,6 +48,10 @@ pub enum EngineError {
     )]
     NotACluster(String),
 
+    /// Setting up the database (roles, schemas, internal tables) or logging in as a role failed.
+    #[error("database setup: {0}")]
+    Database(String),
+
     #[error("the instance has not been created yet; run init first")]
     NotInitialised,
 

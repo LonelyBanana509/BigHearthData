@@ -104,7 +104,7 @@ Recipe bounds (statement count, time limit) are checked at registration in M3; t
 ## 8. What changes outside `bhdata-pg`
 
 - `bhdata-types`: `[pools]` config and its validation.
-- `bhdata-engine`: `render_hba` and a new `render_ident` (roles from the one list in `bhdata-pg`), applied at every start with the other managed files; `host::run` calls bootstrap and the budget check after the instance is up; `bhdatactl status` adds the schema version and the pool budget line.
+- `bhdata-engine`: `render_hba` and a new `render_ident` (roles from the one list in `bhdata-pg`), applied at every start with the other managed files; `host::run` checks the budget before it makes anything (the check needs no server), then after the instance is up runs the bootstrap and opens each pool once to prove its role can log in; `supervise::start` sends `pg_ctl reload` to a server that is already running, so an instance made by M1 picks up the new `pg_hba`/`pg_ident` (v0.2 addition); `bhdatactl status` adds the schema version (not ok when it is missing) and the pool budget line (not ok when over the limit). The pools are not kept open by the host until M3 uses them.
 - `deps.allow`: no new workspace edges. `Cargo.toml` workspace (slice B): `tokio`, `tokio-postgres` and `deadpool-postgres`, each pinned to its major (0.x: minor) line.
 
 ## 9. What is checked where
@@ -116,7 +116,8 @@ Recipe bounds (statement count, time limit) are checked at registration in M3; t
 | Lockdown: the recipe role cannot read or write internal tables directly, cannot create objects, cannot load an extension; can only use the three functions | `--ignored` tests | Same on 17 |
 | `claim_request` semantics: new, same, conflict, concurrent identical requests | `--ignored` tests | Same on 17 |
 | Real error mapping: provoke a deadlock, unique violation, lock timeout, statement timeout and check the mapped kind | `--ignored` tests | Same on 17 |
-| Install and start from nothing, then bootstrap inside the service, restart, reboot | Not possible | Clean-VM run (slice C) |
+| An already-running server with the old login rules is reloaded and the roles can log in; `status` shows schema version and budget | `--ignored` test | Same on 17 |
+| Install and start from nothing, then bootstrap inside the service, restart, reboot; on an M1 install, upgrade in place and check `bhdatactl status` | Not possible | Clean-VM run (slice C) |
 | `cargo deny`, `cargo audit` for the new crates | Not possible | `scripts/check.sh` |
 
 ## 10. Left out of M2

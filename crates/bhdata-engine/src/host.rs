@@ -17,6 +17,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use bhdata_pg::bootstrap;
+use bhdata_pg::conn_budget::{self, Budget, OverBudget, SUPERUSER_RESERVED_CONNECTIONS};
+use bhdata_pg::pool::Target;
+use bhdata_types::config::PoolConfig;
 use bhdata_types::{Clock, Config, SystemClock};
 
 use crate::default_pg_bin_dir;
@@ -87,6 +91,14 @@ pub fn spec_from(config: &Config, superuser: String) -> Result<InstanceSpec, Eng
     )
 }
 
+/// Where the instance's socket is, for `bhdata-pg`.
+pub fn target_of(spec: &InstanceSpec) -> Target {
+    Target {
+        socket_dir: spec.run_dir(),
+        port: spec.port,
+    }
+}
+
 fn describe(status: &Status) -> String {
     let mut text = format!(
         "instance {SHARD_ID}: {:?}, {} restart(s)",
@@ -111,6 +123,14 @@ pub fn run(config: &Config) -> Result<Infallible, EngineError> {
             ),
         ));
     }
+    // The pool sizes must fit in the instance's connection limit; found before anything is made.
+    let budget = conn_budget::check(
+        &config.pools,
+        spec.max_connections,
+        SUPERUSER_RESERVED_CONNECTIONS,
+    )
+    .map_err(|e| EngineError::invalid("pools", e.to_string()))?;
+    log(&format!("connections: {budget}"));
     match instance::init(&spec)? {
         InitOutcome::Created => log(&format!("created instance {SHARD_ID}")),
         InitOutcome::AlreadyInitialised => log(&format!("instance {SHARD_ID} found")),
@@ -119,6 +139,27 @@ pub fn run(config: &Config) -> Result<Infallible, EngineError> {
         StartOutcome::Started => log(&format!("started instance {SHARD_ID}")),
         StartOutcome::AlreadyRunning => log(&format!("instance {SHARD_ID} was already running")),
     }
+
+    // Roles, database, schemas and internal tables; then every pool's role must be able to log in.
+    // Until the server is async (M5) each runs on a small private runtime.
+    let target = target_of(&spec);
+    let database = |e: bootstrap::BootstrapError| EngineError::Database(e.to_string());
+    let report = bootstrap::bootstrap_blocking(&target, &spec.superuser).map_err(database)?;
+    log(&if report.applied.is_empty() {
+        format!("database at schema version {}", report.schema_version)
+    } else {
+        format!(
+            "database {} (schema version {})",
+            if report.created_database {
+                "created"
+            } else {
+                "migrated"
+            },
+            report.schema_version
+        )
+    });
+    bootstrap::verify_logins_blocking(&target, &config.pools).map_err(database)?;
+    log("every pool role can log in");
 
     let supervisor = Supervisor::spawn(Arc::new(PgOps(spec.clone())), SuperviseConfig::default());
     let ops = SystemUpdateOps {
@@ -179,6 +220,10 @@ pub struct StatusFacts {
     pub running: bool,
     pub health: Health,
     pub started_with: Option<PgVersion>,
+    /// The schema version in the database; `None` when it is not up or has not been set up.
+    pub schema_version: Option<u32>,
+    /// The pool sizes against the connection limit; `Err` when they do not fit.
+    pub budget: Result<Budget, OverBudget>,
 }
 
 /// The report lines, and whether everything is fine (the instance accepts connections).
@@ -220,31 +265,58 @@ pub fn render_status(facts: &StatusFacts) -> (Vec<String>, bool) {
         let minor = v.minor.map_or(String::new(), |m| format!(".{m}"));
         lines.push(format!("started with PostgreSQL {}{minor}", v.major));
     }
-    (lines, facts.health == Health::Ready)
+    let mut ok = facts.health == Health::Ready;
+    if facts.health == Health::Ready {
+        match facts.schema_version {
+            Some(v) => lines.push(format!("database: schema version {v}")),
+            None => {
+                lines.push("database: not set up (no schema version found)".to_string());
+                ok = false;
+            }
+        }
+    }
+    match &facts.budget {
+        Ok(b) => lines.push(format!("connections: {b}")),
+        Err(e) => {
+            lines.push(format!("connections: {e}"));
+            ok = false;
+        }
+    }
+    (lines, ok)
 }
 
-pub fn gather_status(spec: &InstanceSpec) -> StatusFacts {
+pub fn gather_status(spec: &InstanceSpec, pools: &PoolConfig) -> StatusFacts {
     let accessible = match fs::metadata(spec.run_dir()) {
         Ok(_) => true,
         Err(e) => e.kind() != io::ErrorKind::PermissionDenied,
+    };
+    let health = if accessible {
+        supervise::health(spec)
+    } else {
+        Health::Down
+    };
+    let schema_version = if health == Health::Ready {
+        bootstrap::schema_version_blocking(&target_of(spec), &spec.superuser)
+            .ok()
+            .flatten()
+    } else {
+        None
     };
     StatusFacts {
         bin_dir: spec.pg_bin_dir.clone(),
         installed: install::is_installed(&spec.pg_bin_dir),
         accessible,
         running: accessible && supervise::is_running(spec),
-        health: if accessible {
-            supervise::health(spec)
-        } else {
-            Health::Down
-        },
+        health,
         started_with: supervise::recorded_version(spec),
+        schema_version,
+        budget: conn_budget::check(pools, spec.max_connections, SUPERUSER_RESERVED_CONNECTIONS),
     }
 }
 
 /// Gathers and renders in one step.
-pub fn status(spec: &InstanceSpec) -> (Vec<String>, bool) {
-    render_status(&gather_status(spec))
+pub fn status(spec: &InstanceSpec, pools: &PoolConfig) -> (Vec<String>, bool) {
+    render_status(&gather_status(spec, pools))
 }
 
 /// The whole of `bhdatactl` at M1: `status [--config <absolute path>]`. The other commands arrive
@@ -266,10 +338,11 @@ pub fn ctl_main(args: &[OsString]) -> ExitCode {
         }
     };
     // The instance's superuser is always the service user, whoever asks.
-    let spec = load_config(&path).and_then(|c| spec_from(&c, SERVICE_USER.to_string()));
+    let spec = load_config(&path)
+        .and_then(|c| spec_from(&c, SERVICE_USER.to_string()).map(|spec| (spec, c.pools)));
     match spec {
-        Ok(spec) => {
-            let (lines, ok) = status(&spec);
+        Ok((spec, pools)) => {
+            let (lines, ok) = status(&spec, &pools);
             for line in lines {
                 println!("{line}");
             }
@@ -369,6 +442,8 @@ mod tests {
                 major: 17,
                 minor: Some(2),
             }),
+            schema_version: Some(1),
+            budget: conn_budget::check(&PoolConfig::default(), 100, SUPERUSER_RESERVED_CONNECTIONS),
         }
     }
 
@@ -381,7 +456,9 @@ mod tests {
             [
                 "instance shard0: running",
                 "health: accepting connections",
-                "started with PostgreSQL 17.2"
+                "started with PostgreSQL 17.2",
+                "database: schema version 1",
+                "connections: pools use 38 + 3 reserved = 41 of 100"
             ]
         );
     }
@@ -419,6 +496,38 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_schema_or_pools_over_the_limit_are_named_and_not_ok() {
+        let unset = StatusFacts {
+            schema_version: None,
+            ..facts()
+        };
+        let (lines, ok) = render_status(&unset);
+        assert!(!ok && lines.iter().any(|l| l.contains("not set up")));
+
+        let over = StatusFacts {
+            budget: conn_budget::check(&PoolConfig::default(), 20, SUPERUSER_RESERVED_CONNECTIONS),
+            ..facts()
+        };
+        let (lines, ok) = render_status(&over);
+        assert!(
+            !ok && lines.last().unwrap().contains("41 of 20"),
+            "{lines:?}"
+        );
+
+        // A server that is not answering has no schema line: it cannot be asked.
+        let down = StatusFacts {
+            health: Health::Down,
+            running: false,
+            schema_version: None,
+            ..facts()
+        };
+        assert!(!render_status(&down)
+            .0
+            .iter()
+            .any(|l| l.starts_with("database")));
+    }
+
+    #[test]
     fn a_status_line_for_the_watcher_shows_restarts_and_the_last_error() {
         use crate::supervise::State;
         let s = Status {
@@ -438,10 +547,13 @@ mod tests {
     fn status_of_an_instance_that_was_never_made_is_not_ok() {
         let spec = spec_from(&Config::default(), "bhdata".into()).unwrap();
         // No PostgreSQL programs where the pinned version would be, in a plain test machine.
-        let (lines, ok) = status(&InstanceSpec {
-            pg_bin_dir: PathBuf::from("/nonexistent/pg/bin"),
-            ..spec
-        });
+        let (lines, ok) = status(
+            &InstanceSpec {
+                pg_bin_dir: PathBuf::from("/nonexistent/pg/bin"),
+                ..spec
+            },
+            &PoolConfig::default(),
+        );
         assert!(!ok);
         assert!(lines[0].contains("not found"));
     }

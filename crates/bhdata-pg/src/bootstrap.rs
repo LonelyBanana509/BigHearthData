@@ -11,12 +11,13 @@
 //!
 //! Running it again changes nothing. Data from a newer release stops it ([`TooNew`]).
 
+use bhdata_types::config::PoolConfig;
 use bhdata_types::error::Error;
 use tokio_postgres::{Client, NoTls};
 
 use crate::errors::PgError;
 use crate::internal::{self, TooNew};
-use crate::pool::{describe, pg_error, Target};
+use crate::pool::{describe, pg_error, PoolError, Pools, Target};
 use crate::roles::{
     self, AttrError, Role, RoleRow, SchemaOwnerError, DATABASE, DATABASE_EXISTS_QUERY,
 };
@@ -57,6 +58,9 @@ pub enum BootstrapError {
     /// The stored schema version is not a number.
     #[error("the stored schema version {0:?} is not a number")]
     BadVersion(String),
+    /// A pool's role could not log in or get a connection.
+    #[error(transparent)]
+    Pool(#[from] PoolError),
     /// The private runtime could not be built.
     #[error("could not start the bootstrap runtime: {0}")]
     Runtime(std::io::Error),
@@ -183,35 +187,62 @@ pub async fn bootstrap(
     })
 }
 
+/// The stored schema version; `None` for a database that has no `meta` table or no row yet.
+async fn read_version(client: &Client) -> Result<Option<u32>, BootstrapError> {
+    let has_meta: bool = client
+        .query_one(internal::META_EXISTS_QUERY, &[])
+        .await
+        .map_err(step("look for meta"))?
+        .get(0);
+    if !has_meta {
+        return Ok(None);
+    }
+    match client
+        .query_opt(internal::READ_VERSION_QUERY, &[])
+        .await
+        .map_err(step("read the schema version"))?
+    {
+        Some(row) => {
+            let text: String = row.get(0);
+            let version = text
+                .parse::<u32>()
+                .map_err(|_| BootstrapError::BadVersion(text))?;
+            Ok(Some(version))
+        }
+        None => Ok(None),
+    }
+}
+
+/// The schema version the data is at, read as the superuser (for status output).
+///
+/// # Errors
+/// [`BootstrapError`] when the database cannot be reached or read.
+pub async fn schema_version(
+    target: &Target,
+    superuser: &str,
+) -> Result<Option<u32>, BootstrapError> {
+    let db = connect(target, superuser, DATABASE, "connect to bhdata").await?;
+    read_version(&db).await
+}
+
+/// Opens every pool once and closes it again, so a login that the `pg_ident` map or a role
+/// attribute would refuse is found at start-up and not by the first request.
+///
+/// # Errors
+/// [`BootstrapError::Pool`] naming the role that could not connect.
+pub async fn verify_logins(target: &Target, sizes: &PoolConfig) -> Result<(), BootstrapError> {
+    let pools = Pools::connect(target, sizes).await?;
+    pools.close();
+    Ok(())
+}
+
 async fn migrate(target: &Target) -> Result<Vec<u32>, BootstrapError> {
     let mut client = connect(target, Role::Admin.name(), DATABASE, "connect as admin").await?;
     client
         .batch_execute(&format!("SET ROLE {}", Role::Owner))
         .await
         .map_err(step("act as the owner"))?;
-    let has_meta: bool = client
-        .query_one(internal::META_EXISTS_QUERY, &[])
-        .await
-        .map_err(step("look for meta"))?
-        .get(0);
-    let current = if has_meta {
-        match client
-            .query_opt(internal::READ_VERSION_QUERY, &[])
-            .await
-            .map_err(step("read the schema version"))?
-        {
-            Some(row) => {
-                let text: String = row.get(0);
-                Some(
-                    text.parse::<u32>()
-                        .map_err(|_| BootstrapError::BadVersion(text))?,
-                )
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
+    let current = read_version(&client).await?;
     let mut applied = Vec::new();
     for migration in internal::pending(current)? {
         let tx = client
@@ -230,6 +261,14 @@ async fn migrate(target: &Target) -> Result<Vec<u32>, BootstrapError> {
     Ok(applied)
 }
 
+fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, BootstrapError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(BootstrapError::Runtime)?;
+    Ok(rt.block_on(future))
+}
+
 /// [`bootstrap`] on a small private runtime built for this one call, for the host while the
 /// server itself is not async (until M5).
 ///
@@ -239,11 +278,26 @@ pub fn bootstrap_blocking(
     target: &Target,
     superuser: &str,
 ) -> Result<BootstrapReport, BootstrapError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(BootstrapError::Runtime)?;
-    rt.block_on(bootstrap(target, superuser))
+    block_on(bootstrap(target, superuser))?
+}
+
+/// [`schema_version`] on a private runtime.
+///
+/// # Errors
+/// As [`schema_version`], or [`BootstrapError::Runtime`].
+pub fn schema_version_blocking(
+    target: &Target,
+    superuser: &str,
+) -> Result<Option<u32>, BootstrapError> {
+    block_on(schema_version(target, superuser))?
+}
+
+/// [`verify_logins`] on a private runtime.
+///
+/// # Errors
+/// As [`verify_logins`], or [`BootstrapError::Runtime`].
+pub fn verify_logins_blocking(target: &Target, sizes: &PoolConfig) -> Result<(), BootstrapError> {
+    block_on(verify_logins(target, sizes))?
 }
 
 #[cfg(test)]

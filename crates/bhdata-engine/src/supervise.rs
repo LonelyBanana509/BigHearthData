@@ -115,6 +115,17 @@ pub(crate) fn start_with(spec: &InstanceSpec, as_root: bool) -> Result<StartOutc
     check_data_version(spec, installed)?;
     instance::apply_settings(spec)?;
     if is_running(spec) {
+        // A server that was already up still runs with the old `pg_hba.conf` and `pg_ident.conf`
+        // (an instance made by an older release, say); a reload makes it read the files above.
+        run_tool(
+            "pg_ctl",
+            &spec.bin("pg_ctl"),
+            &[
+                OsStr::new("reload"),
+                OsStr::new("-D"),
+                spec.data_dir().as_os_str(),
+            ],
+        )?;
         return Ok(StartOutcome::AlreadyRunning);
     }
     // Create the startup log private before the server writes to it.
@@ -646,6 +657,11 @@ mod tests {
             .filter(|c| c.starts_with("start"))
             .count();
         assert_eq!(starts, 1);
+        // The files were written again, so the running server is told to read them.
+        assert_eq!(
+            calls(dir.path()).last().unwrap(),
+            &format!("reload -D {}", spec.data_dir().display())
+        );
     }
 
     #[test]

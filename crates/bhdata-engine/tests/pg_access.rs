@@ -432,3 +432,52 @@ fn real_errors_map_to_the_kinds_in_the_table_and_a_busy_pool_answers_quickly() {
         ));
     });
 }
+
+#[test]
+#[ignore = "needs a real PostgreSQL and a non-root user"]
+fn a_running_server_with_old_login_rules_gets_the_new_ones_and_status_reports_the_database() {
+    use bhdata_engine::host;
+    use bhdata_engine::supervise::StartOutcome;
+    use bhdata_pg::bootstrap::verify_logins_blocking;
+
+    let pg = Instance::start();
+    pg.boot().unwrap();
+    verify_logins_blocking(&pg.target(), &sizes()).unwrap();
+
+    // An instance made by M1: only the service user may log in, and the server has read that.
+    let hba = pg.spec.data_dir().join("pg_hba.conf");
+    std::fs::write(&hba, format!("local all {} peer\n", pg.spec.superuser)).unwrap();
+    let reload = Command::new(pg.spec.bin("pg_ctl"))
+        .arg("reload")
+        .arg("-D")
+        .arg(pg.spec.data_dir())
+        .status()
+        .unwrap();
+    assert!(reload.success());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(matches!(
+        verify_logins_blocking(&pg.target(), &sizes()),
+        Err(BootstrapError::Pool(_))
+    ));
+
+    // Starting again finds it running, writes the files, and tells the server to read them.
+    assert_eq!(
+        supervise::start(&pg.spec).unwrap(),
+        StartOutcome::AlreadyRunning
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    verify_logins_blocking(&pg.target(), &sizes()).unwrap();
+
+    let (lines, ok) = host::status(&pg.spec, &sizes());
+    assert!(ok, "{lines:?}");
+    assert!(
+        lines.contains(&"database: schema version 1".to_string()),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("connections: pools use 5 + 3")),
+        "{lines:?}"
+    );
+}
