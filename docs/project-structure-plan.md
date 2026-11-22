@@ -1,6 +1,6 @@
 # BigHearthData: Project Structure Plan
 
-Plan v0.2 · 2026-11-22 · Companion to `bighearthdata-design-v1.0.md` (the design; section numbers below refer to it)
+Plan v0.3 · 2026-11-22 · Companion to `bighearthdata-design-v1.0.md` (the design; section numbers below refer to it)
 
 This file says how the design becomes a Rust codebase: the workspace, the crates, the files inside them, the order of work, and how each piece is tested. It does not repeat the design.
 
@@ -199,9 +199,13 @@ src/tuning.rs       self-tuning checkpoints, wal_level handling
 
 ### bhdata-helper (separate binary, root-owned)
 ```
-src/main.rs         parses a fixed action name only: install-pinned, restart, update
+src/main.rs         parses a fixed action name only: install-pinned, update, restart
 src/actions.rs      one function per action; no free-form arguments, no shell strings
+src/guard.rs        root check, root-owned location check, platform check
+src/exec.rs         command runner: absolute paths, fixed arguments, fixed environment
+src/error.rs        errors and the stable exit codes
 ```
+No dependencies beyond the standard library. Details in `docs/specs/engine-manager.md`.
 The installer sets this up with sudo; the running server never has root (§3 Engine manager).
 
 ### bhdata-writer
@@ -347,6 +351,8 @@ Each milestone is several small slices. Each ends green and zip-able.
 | M14 | Shard map, epochs | `bhdata-shard`, `bhdata-control`, `bhdata-planner` | Several shards on one machine; wrong-shard refusal; slot move with abort |
 | M15 | Transaction DB and sagas | `bhdata-txn` | Cross-shard transfer with intent, recovery, reconciliation, `pending` replies |
 | M16 | Failover and fencing | `bhdata-txn` | Primary, standby, witness; terms stored by shards; orphan-step recovery after async takeover |
+
+**M1 slices.** M1 is built as three slices, each ending with `scripts/check.sh` clean and a zip: **A** `bhdata-helper`, **B** `bhdata-engine`, **C** `packaging/` and the clean-VM run. The spec is `docs/specs/engine-manager.md`; it also lists which checks can only be run on a real VM. `upgrade.rs` and `tuning.rs` in `bhdata-engine` are proposed to move out of M1 (spec section 6); this table is unchanged until that is agreed.
 
 **Thin slice first.** M0 to M4 need no network: the write-path suite runs in-process against a real private PostgreSQL, with recipes loaded from files. Finish and harden M4 before starting M5, because it is the riskiest part and everything else sits on it.
 

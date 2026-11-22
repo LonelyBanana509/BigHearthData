@@ -6,7 +6,15 @@ It runs on top of a private PostgreSQL that it installs and manages itself. Deve
 
 ## Status
 
-Design v1.0 is approved. Milestone M0 (workspace skeleton) is done: the workspace builds, `bhdata-types` has the ids, named errors, config and clock/version types, and `scripts/check.sh` passes. The next step is M1 (engine manager and installer) in the plan.
+Design v1.0 is approved. Milestone M0 (workspace skeleton) is done: the workspace builds, `bhdata-types` has the ids, named errors, config and clock/version types, and `scripts/check.sh` passes.
+
+M1 (engine manager and installer) is built in three slices, each ending with `scripts/check.sh` clean and a zip:
+
+- **A. `bhdata-helper`** (the small root-run helper): done, except that the real PostgreSQL install through it is checked in slice C.
+- **B. `bhdata-engine`** (install, start, supervise, update PostgreSQL instances): next.
+- **C. `packaging/`** (installer, uninstaller, systemd unit, `sudoers`) and the clean-VM run.
+
+The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only the helper has code so far; the other crates are still empty.
 
 ## Building and checking
 
@@ -20,6 +28,7 @@ Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo insta
 
 - [Design v1.0](docs/design/bighearthdata-design-v1.0.md): what it is and how it behaves
 - [Project structure plan](docs/project-structure-plan.md): workspace, crates, build order, tests
+- [docs/specs/engine-manager.md](docs/specs/engine-manager.md): M1 spec (helper, engine manager, packaging)
 - `docs/specs/`: one short spec per component, written before the component
 
 ## License
