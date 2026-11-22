@@ -1,0 +1,15 @@
+[package]
+name = "bhdata-planner"
+description = "Lane choice, routing and the shard map client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bhdata-api = { workspace = true }
+bhdata-cache = { workspace = true }

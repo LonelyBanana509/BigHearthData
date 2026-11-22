@@ -1,0 +1,13 @@
+[package]
+name = "bhdata-helper"
+description = "Tiny privileged helper binary that runs a fixed list of actions only"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,32 @@
+# cargo-deny: supply-chain rules, run by scripts/check.sh (plan section 8).
+
+[graph]
+all-features = true
+
+[advisories]
+# Known vulnerabilities, unmaintained and yanked crates fail the check.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+# Only licenses that are compatible with shipping the project under Apache-2.0.
+# Add a license here only after checking that it is (copyleft licenses are not).
+# Likely candidates when a new dependency needs them: BSD-2-Clause, BSD-3-Clause, ISC, Zlib.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates depend on each other by path, with no version number.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

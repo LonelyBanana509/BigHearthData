@@ -1,0 +1,15 @@
+[package]
+name = "bhdata-engine"
+description = "Engine manager: install, run and upgrade the private PostgreSQL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bhdata-types = { workspace = true }
+bhdata-pg = { workspace = true }

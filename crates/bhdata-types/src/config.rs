@@ -1,0 +1,270 @@
+//! Config structs and their defaults. Defaults live here, in one place (plan section 6).
+//!
+//! Every value that the design states a default for is here: cache entries expire after 2 seconds,
+//! a replica more than 1 second behind leaves rotation, request ids are kept for 24 hours, history
+//! rows for 90 days, 7 daily backup copies, full durability. Config for a crate that does not exist
+//! yet is added with that crate's milestone, not guessed now.
+//!
+//! The structs read from TOML (the config format), accept any subset of keys, and refuse unknown
+//! keys, so a typo is an error instead of a silently ignored setting. Reading the file is the
+//! server's and `bhdatactl`'s job; this crate only defines the shape.
+//!
+//! Time values are plain numbers with the unit in the name (`ttl_ms`, `retry_window_secs`), which
+//! is how they look in a TOML file. Use the accessor methods to get a [`Duration`].
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error as ThisError;
+
+/// Number of virtual slots that keys hash into (design section 6).
+///
+/// Fixed for the life of any system, because changing it re-hashes every key. It is a constant, not
+/// a setting, and it must stay a power of two so that hash-to-slot is a mask.
+pub const SLOT_COUNT: u32 = 4_096;
+
+const _: () = assert!(SLOT_COUNT.is_power_of_two());
+
+/// The mask that turns a 64-bit hash into a slot number: `hash & SLOT_MASK`.
+pub const SLOT_MASK: u64 = (SLOT_COUNT as u64) - 1;
+
+/// A config value that fails validation.
+#[derive(Debug, Clone, PartialEq, Eq, ThisError)]
+pub enum ConfigError {
+    /// A value that must be above zero was zero.
+    #[error("{field} must be greater than zero")]
+    NotPositive {
+        /// The dotted name of the setting, as written in the config file.
+        field: &'static str,
+    },
+}
+
+/// How a commit is made durable (design section 10b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Durability {
+    /// A result is returned only after its commit is synced. The default, always.
+    #[default]
+    Full,
+    /// Faster and unsafe: a crash can lose acknowledged writes. Must be asked for by name, and
+    /// every benchmark that uses it must say so.
+    Relaxed,
+}
+
+/// The memory cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheConfig {
+    /// How long a cache entry lives. The cache is not cleared on writes, so this bounds staleness.
+    pub ttl_ms: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig { ttl_ms: 2_000 }
+    }
+}
+
+impl CacheConfig {
+    /// How long a cache entry lives.
+    #[must_use]
+    pub fn ttl(&self) -> Duration {
+        Duration::from_millis(self.ttl_ms)
+    }
+}
+
+/// Read replicas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReplicaConfig {
+    /// A replica further behind than this is taken out of rotation.
+    pub max_lag_ms: u64,
+}
+
+impl Default for ReplicaConfig {
+    fn default() -> Self {
+        ReplicaConfig { max_lag_ms: 1_000 }
+    }
+}
+
+impl ReplicaConfig {
+    /// The most a replica may lag and still serve reads.
+    #[must_use]
+    pub fn max_lag(&self) -> Duration {
+        Duration::from_millis(self.max_lag_ms)
+    }
+}
+
+/// How long request records and history are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RequestConfig {
+    /// How long a stored result can answer a retry. Also the SDK's maximum retry window.
+    pub retry_window_secs: u64,
+    /// How long the compact history row of a finished command is kept.
+    pub history_retention_days: u32,
+}
+
+impl Default for RequestConfig {
+    fn default() -> Self {
+        RequestConfig {
+            retry_window_secs: 24 * 60 * 60,
+            history_retention_days: 90,
+        }
+    }
+}
+
+impl RequestConfig {
+    /// How long a stored result can answer a retry.
+    #[must_use]
+    pub fn retry_window(&self) -> Duration {
+        Duration::from_secs(self.retry_window_secs)
+    }
+
+    /// How long a history row is kept.
+    #[must_use]
+    pub fn history_retention(&self) -> Duration {
+        Duration::from_secs(u64::from(self.history_retention_days) * 24 * 60 * 60)
+    }
+}
+
+/// Backups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BackupConfig {
+    /// Daily copies kept, plus the log needed to restore any point in them.
+    pub daily_copies: u32,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        BackupConfig { daily_copies: 7 }
+    }
+}
+
+/// The whole config. Every field has a default, so an empty file is a valid config.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// How commits are made durable.
+    pub durability: Durability,
+    /// The memory cache.
+    pub cache: CacheConfig,
+    /// Read replicas.
+    pub replicas: ReplicaConfig,
+    /// Request records and history.
+    pub requests: RequestConfig,
+    /// Backups.
+    pub backup: BackupConfig,
+}
+
+impl Config {
+    /// Checks the values that `serde` cannot: anything that must be above zero.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let checks: [(&'static str, u64); 5] = [
+            ("cache.ttl_ms", self.cache.ttl_ms),
+            ("replicas.max_lag_ms", self.replicas.max_lag_ms),
+            (
+                "requests.retry_window_secs",
+                self.requests.retry_window_secs,
+            ),
+            (
+                "requests.history_retention_days",
+                u64::from(self.requests.history_retention_days),
+            ),
+            ("backup.daily_copies", u64::from(self.backup.daily_copies)),
+        ];
+        for (field, value) in checks {
+            if value == 0 {
+                return Err(ConfigError::NotPositive { field });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_the_ones_in_the_design() {
+        let c = Config::default();
+        assert_eq!(c.durability, Durability::Full);
+        assert_eq!(c.cache.ttl(), Duration::from_secs(2));
+        assert_eq!(c.replicas.max_lag(), Duration::from_secs(1));
+        assert_eq!(c.requests.retry_window(), Duration::from_secs(24 * 3600));
+        assert_eq!(
+            c.requests.history_retention(),
+            Duration::from_secs(90 * 24 * 3600)
+        );
+        assert_eq!(c.backup.daily_copies, 7);
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    #[test]
+    fn slots_are_4096_and_the_mask_matches() {
+        assert_eq!(SLOT_COUNT, 4_096);
+        assert_eq!(SLOT_MASK, 0xfff);
+        assert_eq!(SLOT_MASK + 1, u64::from(SLOT_COUNT));
+        assert_eq!(0xdead_beef_u64 & SLOT_MASK, 0xeef);
+    }
+
+    #[test]
+    fn an_empty_file_is_the_default_config() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn a_partial_file_keeps_defaults_for_the_rest() {
+        let c: Config = toml::from_str("[cache]\nttl_ms = 500\n").unwrap();
+        assert_eq!(c.cache.ttl(), Duration::from_millis(500));
+        assert_eq!(c.replicas, ReplicaConfig::default());
+        assert_eq!(c.requests, RequestConfig::default());
+    }
+
+    #[test]
+    fn relaxed_durability_must_be_asked_for_by_name() {
+        let c: Config = toml::from_str("durability = \"relaxed\"").unwrap();
+        assert_eq!(c.durability, Durability::Relaxed);
+        assert!(toml::from_str::<Config>("durability = \"fast\"").is_err());
+    }
+
+    #[test]
+    fn unknown_keys_are_errors_not_ignored() {
+        assert!(toml::from_str::<Config>("cache_ttl = 5").is_err());
+        assert!(toml::from_str::<Config>("[cache]\nttl = 5\n").is_err());
+    }
+
+    #[test]
+    fn a_config_round_trips_through_toml() {
+        let c = Config {
+            durability: Durability::Relaxed,
+            backup: BackupConfig { daily_copies: 14 },
+            ..Config::default()
+        };
+        let text = toml::to_string(&c).unwrap();
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), c);
+    }
+
+    #[test]
+    fn zero_values_fail_validation_and_name_the_setting() {
+        let mut c = Config::default();
+        c.requests.retry_window_secs = 0;
+        assert_eq!(
+            c.validate(),
+            Err(ConfigError::NotPositive {
+                field: "requests.retry_window_secs"
+            })
+        );
+        let mut c = Config::default();
+        c.cache.ttl_ms = 0;
+        assert_eq!(
+            c.validate(),
+            Err(ConfigError::NotPositive {
+                field: "cache.ttl_ms"
+            })
+        );
+    }
+}

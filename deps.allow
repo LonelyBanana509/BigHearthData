@@ -1,0 +1,29 @@
+# The only allowed crate-to-crate dependencies (plan section 5).
+# Format:  crate: dep dep ...   (nothing after the colon = no workspace dependencies)
+# scripts/check-deps.sh compares this file with `cargo metadata` and fails on any extra edge.
+
+bhdata-api: bhdata-recipe bhdata-types
+bhdata-backup: bhdata-api bhdata-changelog bhdata-pg
+bhdata-cache: bhdata-types
+bhdata-changelog: bhdata-pg bhdata-types
+bhdata-cli: bhdata-backup bhdata-client bhdata-engine
+bhdata-client: bhdata-proto
+bhdata-control: bhdata-api bhdata-pg bhdata-recipe
+bhdata-derived: bhdata-api bhdata-changelog bhdata-pg
+bhdata-engine: bhdata-pg bhdata-types
+bhdata-gateway: bhdata-api bhdata-proto
+bhdata-helper:
+bhdata-import: bhdata-api
+bhdata-kinds: bhdata-recipe bhdata-schema bhdata-types
+bhdata-pg: bhdata-types
+bhdata-planner: bhdata-api bhdata-cache
+bhdata-proto: bhdata-types
+bhdata-recipe: bhdata-schema bhdata-types
+bhdata-schema: bhdata-types
+bhdata-server: bhdata-api bhdata-backup bhdata-cache bhdata-changelog bhdata-control bhdata-derived bhdata-engine bhdata-gateway bhdata-import bhdata-kinds bhdata-pg bhdata-planner bhdata-recipe bhdata-schema bhdata-writer
+bhdata-shard: bhdata-api
+bhdata-sqlmode: bhdata-api bhdata-changelog bhdata-pg
+bhdata-stress: bhdata-client
+bhdata-txn: bhdata-api bhdata-pg
+bhdata-types:
+bhdata-writer: bhdata-api bhdata-changelog bhdata-pg

@@ -1,0 +1,20 @@
+[package]
+name = "bhdata-cli"
+description = "bhdatactl: install, start, status, register, import, backup, restore, stress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "bhdatactl"
+path = "src/main.rs"
+
+[dependencies]
+bhdata-client = { workspace = true }
+bhdata-engine = { workspace = true }
+bhdata-backup = { workspace = true }

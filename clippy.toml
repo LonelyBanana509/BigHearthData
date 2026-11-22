@@ -1,0 +1,2 @@
+# Plan section 1, rule 5: no `unwrap` outside tests (the workspace lint denies it everywhere else).
+allow-unwrap-in-tests = true

@@ -6,7 +6,15 @@ It runs on top of a private PostgreSQL that it installs and manages itself. Deve
 
 ## Status
 
-Design v1.0 is approved. No code yet. The next step is milestone M0 (workspace skeleton) in the plan.
+Design v1.0 is approved. Milestone M0 (workspace skeleton) is done: the workspace builds, `bhdata-types` has the ids, named errors, config and clock/version types, and `scripts/check.sh` passes. The next step is M1 (engine manager and installer) in the plan.
+
+## Building and checking
+
+Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo install --locked cargo-deny cargo-audit`).
+
+- `scripts/check.sh` runs format, build, test, clippy, the dependency check, `cargo deny` and `cargo audit`. Every slice ends with it clean.
+- `scripts/check-deps.sh` compares the crate-to-crate dependencies with `deps.allow` and fails on any extra edge.
+- `python scripts/make_zip.py` zips the project for handing back (leaves out `target/`, logs, `.git/` and the like).
 
 ## Documents
 

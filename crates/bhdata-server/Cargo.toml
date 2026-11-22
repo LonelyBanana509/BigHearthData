@@ -1,0 +1,28 @@
+[package]
+name = "bhdata-server"
+description = "Server binary: wires every stage-0 crate into one process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bhdata-api = { workspace = true }
+bhdata-backup = { workspace = true }
+bhdata-cache = { workspace = true }
+bhdata-changelog = { workspace = true }
+bhdata-control = { workspace = true }
+bhdata-derived = { workspace = true }
+bhdata-engine = { workspace = true }
+bhdata-gateway = { workspace = true }
+bhdata-import = { workspace = true }
+bhdata-kinds = { workspace = true }
+bhdata-pg = { workspace = true }
+bhdata-planner = { workspace = true }
+bhdata-recipe = { workspace = true }
+bhdata-schema = { workspace = true }
+bhdata-writer = { workspace = true }

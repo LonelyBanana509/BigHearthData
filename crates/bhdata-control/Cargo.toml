@@ -1,0 +1,16 @@
+[package]
+name = "bhdata-control"
+description = "Control plane: recipe registry, shard map, logins, audit and admin API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bhdata-api = { workspace = true }
+bhdata-recipe = { workspace = true }
+bhdata-pg = { workspace = true }

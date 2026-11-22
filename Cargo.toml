@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Workspace crates that another crate depends on. Which crate may use which is fixed in deps.allow.
+# Crates nobody depends on yet (the binaries, shard, sqlmode, txn) are added here when someone does.
+bhdata-api = { path = "crates/bhdata-api" }
+bhdata-backup = { path = "crates/bhdata-backup" }
+bhdata-cache = { path = "crates/bhdata-cache" }
+bhdata-changelog = { path = "crates/bhdata-changelog" }
+bhdata-client = { path = "crates/bhdata-client" }
+bhdata-control = { path = "crates/bhdata-control" }
+bhdata-derived = { path = "crates/bhdata-derived" }
+bhdata-engine = { path = "crates/bhdata-engine" }
+bhdata-gateway = { path = "crates/bhdata-gateway" }
+bhdata-import = { path = "crates/bhdata-import" }
+bhdata-kinds = { path = "crates/bhdata-kinds" }
+bhdata-pg = { path = "crates/bhdata-pg" }
+bhdata-planner = { path = "crates/bhdata-planner" }
+bhdata-proto = { path = "crates/bhdata-proto" }
+bhdata-recipe = { path = "crates/bhdata-recipe" }
+bhdata-schema = { path = "crates/bhdata-schema" }
+bhdata-types = { path = "crates/bhdata-types" }
+bhdata-writer = { path = "crates/bhdata-writer" }
+
+# External crates, pinned to the major (or minor for 0.x) line.
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+proptest = "1"
+toml = "0.8"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.cargo]
+# At M0 the crates are empty but already declare the dependencies deps.allow gives them, so this
+# lint would fire on nearly every crate. Remove this section once the crates have code.
+unused_dependencies = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+[profile.release]
+overflow-checks = true
