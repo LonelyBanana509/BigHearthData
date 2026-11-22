@@ -33,6 +33,17 @@ pub struct Limits {
     pub max_result_bytes: usize,
 }
 
+impl From<&bhdata_types::config::RecipeConfig> for Limits {
+    fn from(c: &bhdata_types::config::RecipeConfig) -> Limits {
+        Limits {
+            max_steps: c.max_steps as usize,
+            max_list_limit: c.max_list_limit,
+            max_result_values: c.max_result_values as usize,
+            max_result_bytes: c.max_result_bytes as usize,
+        }
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Limits {

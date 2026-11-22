@@ -18,12 +18,16 @@ use std::fmt;
 pub const DATABASE: &str = "bhdata";
 /// Requests, change log, meta, and the narrow functions.
 pub const SCHEMA_INTERNAL: &str = "bhdata_internal";
+/// The control plane's registry: schema versions and recipe versions (spec
+/// `recipe-compiler.md`, section 5). Owned by the owner role; only the admin role reads and
+/// inserts there.
+pub const SCHEMA_CONTROL: &str = "bhdata_control";
 /// Recipe-managed tables.
 pub const SCHEMA_APP: &str = "app";
 /// SQL-mode tables (design section 10c).
 pub const SCHEMA_SQL: &str = "sql";
-/// The three schemas, in the order they are created.
-pub const SCHEMAS: [&str; 3] = [SCHEMA_INTERNAL, SCHEMA_APP, SCHEMA_SQL];
+/// The four schemas, in the order they are created.
+pub const SCHEMAS: [&str; 4] = [SCHEMA_INTERNAL, SCHEMA_CONTROL, SCHEMA_APP, SCHEMA_SQL];
 /// The name of the `pg_ident` map, used in `pg_hba.conf` as `map=bhdata`.
 pub const IDENT_MAP: &str = "bhdata";
 
@@ -156,11 +160,15 @@ pub fn create_database() -> String {
 
 /// Schema rights, one row per schema and login role: the rights it ends up with. Every pair is
 /// listed, with an empty string for "none", so a right that is not in this table is revoked.
-pub const SCHEMA_RIGHTS: [(&str, Role, &str); 12] = [
+pub const SCHEMA_RIGHTS: [(&str, Role, &str); 16] = [
     (SCHEMA_INTERNAL, Role::Recipe, "USAGE"), // to call the three functions, nothing else
     (SCHEMA_INTERNAL, Role::Reader, ""),
     (SCHEMA_INTERNAL, Role::Sql, ""),
     (SCHEMA_INTERNAL, Role::Admin, ""), // reaches the internal tables only by SET ROLE bhdata_owner
+    (SCHEMA_CONTROL, Role::Recipe, ""),
+    (SCHEMA_CONTROL, Role::Reader, ""),
+    (SCHEMA_CONTROL, Role::Sql, ""),
+    (SCHEMA_CONTROL, Role::Admin, "USAGE"), // reads and inserts registry rows; see object_grants
     (SCHEMA_APP, Role::Recipe, "USAGE"),
     (SCHEMA_APP, Role::Reader, "USAGE"),
     (SCHEMA_APP, Role::Sql, "USAGE"),
@@ -364,7 +372,7 @@ pub fn check_attrs(rows: &[RoleRow]) -> Result<(), AttrError> {
 /// Reads each schema's owner: rows of `(schema name, owner name)`.
 pub const SCHEMA_OWNER_QUERY: &str = "SELECT n.nspname, r.rolname FROM pg_catalog.pg_namespace n \
      JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner \
-     WHERE n.nspname IN ('bhdata_internal', 'app', 'sql') ORDER BY n.nspname";
+     WHERE n.nspname IN ('bhdata_internal', 'bhdata_control', 'app', 'sql') ORDER BY n.nspname";
 
 /// A schema that exists with another owner than the owner role.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -424,7 +432,14 @@ mod tests {
             );
             assert!(seen.insert(n));
         }
-        for n in [DATABASE, SCHEMA_INTERNAL, SCHEMA_APP, SCHEMA_SQL, IDENT_MAP] {
+        for n in [
+            DATABASE,
+            SCHEMA_INTERNAL,
+            SCHEMA_CONTROL,
+            SCHEMA_APP,
+            SCHEMA_SQL,
+            IDENT_MAP,
+        ] {
             assert!(
                 n.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                 "{n}"
@@ -638,7 +653,8 @@ mod tests {
             .collect();
         assert_eq!(check_schema_owners(&ok), Ok(()));
         let mut bad = ok.clone();
-        bad[1].1 = "bhdata".to_string();
+        let app = bad.iter().position(|(s, _)| s == "app").unwrap_or(0);
+        bad[app].1 = "bhdata".to_string();
         let text = check_schema_owners(&bad).unwrap_err().to_string();
         assert!(
             text.contains("app") && text.contains("bhdata_owner"),

@@ -6,9 +6,9 @@ bhdata-api: bhdata-recipe bhdata-types
 bhdata-backup: bhdata-api bhdata-changelog bhdata-pg
 bhdata-cache: bhdata-types
 bhdata-changelog: bhdata-pg bhdata-types
-bhdata-cli: bhdata-backup bhdata-client bhdata-engine
+bhdata-cli: bhdata-backup bhdata-client bhdata-control bhdata-engine bhdata-recipe
 bhdata-client: bhdata-proto
-bhdata-control: bhdata-api bhdata-pg bhdata-recipe
+bhdata-control: bhdata-api bhdata-engine bhdata-pg bhdata-recipe bhdata-schema bhdata-types
 bhdata-derived: bhdata-api bhdata-changelog bhdata-pg
 bhdata-engine: bhdata-pg bhdata-types
 bhdata-gateway: bhdata-api bhdata-proto

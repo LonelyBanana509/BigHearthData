@@ -1,4 +1,4 @@
-# Recipe compiler and registry (v0.4)
+# Recipe compiler and registry (v0.5)
 
 Status: decisions confirmed by the owner (section 8). Written before M3. Input: the format in `recipe-format.md`. Crates: `bhdata-schema` (tables), `bhdata-recipe` (compiler and plan), `bhdata-control` (durable registry). Design sections 5, 6 and 9.
 
@@ -42,7 +42,7 @@ Each step compiles to one fixed template with `$n` parameters; identifiers come 
 
 ## 5. Registry (control plane)
 
-- **Storage.** Schema `bhdata_control` in the shard database, owned by `bhdata_owner` and made by internal migration 2 (the same bootstrap path as M2). Tables: `schema_versions` (number, hash, source, applied_at), `recipes` (name, version, content_hash, source, plan JSON, status `active`/`retired`, registered_at, registered_by). A registered row is never updated except `status`.
+- **Storage.** Schema `bhdata_control` in the shard database, owned by `bhdata_owner`: the bootstrap creates the schema at every start, and internal migration 2 (the same path as M2) makes its tables. Tables: `schema_versions` (number, hash, source, applied_at), `recipes` (name, version, content_hash, source, plan JSON, status `active`/`retired`, registered_at, registered_by). A registered row is never updated except `status`.
 - **Write rule.** One transaction per registration: take an advisory lock on the name, compute the next version, insert, apply grants. A repeat of identical content finds its hash and returns the existing version ("already registered as spend@3, unchanged"), so a retried or repeated deploy script is safe and makes no duplicate version.
 - **Reads.** The planner loads all active plans at start and refreshes by registry version (M5). M3 gives `list`, `get(name, version)`, and `latest(name)`.
 - **Callers.** `bhdatactl schema apply <file>`, `bhdatactl recipe register <file>`, `bhdatactl recipe list`. Permission checks arrive with logins (M5); at M3 they run as the local admin only.
@@ -101,5 +101,18 @@ The table in section 2 did not say these; the code and its tests now do.
 9. **Grants** are exact named columns per table and right (`Grants::statements`); `Grants::merge` gives the union over versions. A table is never granted whole, and no plan needs `DELETE`.
 10. **Bounds.** Steps, rows touched or returned (a `list` counts its limit), and a time limit of 2,000 ms enforced by the writer.
 
-Checked against a real PostgreSQL 16 (outside the test suite, to be made a `--ignored` test in slice C): every starter statement, the miss paths on both sides, decimals, the exact-maximum edge, the denied rights of the recipe role, and the insert race. Not yet done: PostgreSQL 17, and the registry, migration 2 and `bhdatactl` (slice C).
+Checked against a real PostgreSQL 16 by hand: every starter statement, the miss paths on both sides, decimals, the exact-maximum edge, the denied rights of the recipe role, and the insert race. Section 11 makes the registry's version of this an `--ignored` test.
+
+## 11. The registry and the commands (slice C, v0.5)
+
+Code: `bhdata-control` (`registry.rs`, `blocking.rs`, `error.rs`), migration 2 and the `bhdata_control` schema in `bhdata-pg`, and `commands.rs` in `bhdata-cli`. The `[recipes]` limits are in `bhdata-types` (`RecipeConfig`) and `packaging/config.toml`; `Limits::from(&RecipeConfig)` turns them into the parser's limits. Test against a real server: `crates/bhdata-control/tests/registry.rs` (`--ignored`, run on PostgreSQL 16).
+
+1. **Tables (migration 2).** `bhdata_control.schema_versions` (number, hash, source, applied_at, applied_by) and `bhdata_control.recipes` (name, version, content_hash, schema_version, source, plan, status, registered_at, registered_by; key (name, version)). `schema_version` is an addition to section 5: which schema the plan was compiled against. `plan` is `text`, the exact canonical JSON that was hashed, not `jsonb`. The admin role may `SELECT` and `INSERT` on both and `UPDATE (status)` on `recipes`; no role may `DELETE`, and no other role has any right in the schema.
+2. **Schema apply.** One transaction under a lock: parse, compare with the schema applied last, then apply only additive changes and record the version. The same schema again (in any table order) is `unchanged`. A schema with any destructive change is refused whole and nothing is applied; the explicit admin action that applies such a change does not exist yet (it needs its own spec). The schema hash is SHA-256 of the statements with tables in name order.
+3. **Register.** Parse, then one transaction: lock on the name, read the schema applied last (none is `NoSchema`), compile against it, compare with the latest version. A plan equal to the latest active version is `unchanged` and adds nothing; any other plan is the next version. **Clarification of section 5:** only the latest version counts, so going back to the content of an older version makes a new version, and a retired latest version is never reused. Comments, spacing and key order never make a new version (they do not change the hash).
+4. **Grants.** The same transaction ends by re-applying the grants, also for an unchanged recipe, so a repeated deploy repairs a lost right. `reapply_grants` revokes everything the recipe role has on `app` and grants the union over every registered version, rebuilt from the stored sources and the schema each was compiled against. It stops with an error if a rebuilt plan hashes differently from the stored one, so a registry row that was changed by hand is noticed.
+5. **Reading.** `list`, `get(name, version)` and `latest(name)` (newest active version). An unknown name or version is `unknown_recipe`; a rejection or a refused schema is `bad_arguments` with the code and sentence (`ControlError::client_error`).
+6. **Commands.** `bhdatactl schema apply <file>`, `recipe register <file>` and `recipe list`, each with `--config <absolute path>`. They run as the local admin only, through one admin connection, and like `status` must be run as the service user.
+7. **Dependencies.** `bhdata-control` now also uses `bhdata-schema` and `bhdata-types` (it applies schemas), and `bhdata-cli` uses `bhdata-control` and `bhdata-recipe`; `deps.allow` and the plan's table say so. `bhdata-control` has `bhdata-engine` as a dev dependency, for the real-server test.
+8. **Left for later.** The `RecipeStore` trait (its first reader is the planner, M5); a command to retire a version (the column and its right exist); permission checks (logins, M5); applying destructive schema changes; the registry's own `--ignored` run on PostgreSQL 17.
 

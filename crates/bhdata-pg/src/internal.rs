@@ -8,6 +8,10 @@
 //! * `finish_request`: records the outcome of a running request, once.
 //! * `append_change`: writes a change-log row for a running request.
 //!
+//! Migration 2 adds the registry in schema `bhdata_control` (spec `recipe-compiler.md`, section 5):
+//! `schema_versions` and `recipes`. Only the admin role reaches them, and only to read, to insert,
+//! and to change a recipe's `status`; a registered row is never edited or deleted.
+//!
 //! Migrations are append-only: a released version is never edited. Slice B runs each as the owner
 //! role (`SET ROLE bhdata_owner`), in one transaction together with [`record_version`]. A function
 //! that refuses a call raises [`crate::errors::SQLSTATE_BHDATA`].
@@ -15,10 +19,10 @@
 use bhdata_types::ids::{MAX_ID_LEN, MAX_LOGIN_LEN};
 
 use crate::errors::SQLSTATE_BHDATA;
-use crate::roles::{Role, SCHEMA_INTERNAL};
+use crate::roles::{Role, SCHEMA_CONTROL, SCHEMA_INTERNAL};
 
 /// The schema version this release writes into `meta`.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One numbered step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,10 +82,16 @@ pub fn record_version(version: u32) -> String {
 /// All migrations, oldest first.
 #[must_use]
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        statements: v1(),
-    }]
+    vec![
+        Migration {
+            version: 1,
+            statements: v1(),
+        },
+        Migration {
+            version: 2,
+            statements: v2(),
+        },
+    ]
 }
 
 /// The migrations still to run for data at `current` (`None`: nothing recorded yet).
@@ -98,6 +108,34 @@ pub fn pending(current: Option<u32>) -> Result<Vec<Migration>, TooNew> {
         .into_iter()
         .filter(|m| m.version > found)
         .collect())
+}
+
+fn v2() -> Vec<String> {
+    let c = SCHEMA_CONTROL;
+    let hex = "~ '^[0-9a-f]{64}$'";
+    vec![
+        format!(
+            "CREATE TABLE {c}.schema_versions (\
+               number integer PRIMARY KEY CHECK (number >= 1), \
+               hash text NOT NULL CHECK (hash {hex}), \
+               source text NOT NULL, \
+               applied_at timestamptz NOT NULL DEFAULT now(), \
+               applied_by text NOT NULL CHECK (octet_length(applied_by) BETWEEN 1 AND {MAX_LOGIN_LEN}))"
+        ),
+        format!(
+            "CREATE TABLE {c}.recipes (\
+               name text NOT NULL CHECK (name ~ '^[a-z][a-z0-9_]{{0,39}}$'), \
+               version integer NOT NULL CHECK (version >= 1), \
+               content_hash text NOT NULL CHECK (content_hash {hex}), \
+               schema_version integer NOT NULL REFERENCES {c}.schema_versions (number), \
+               source text NOT NULL, \
+               plan text NOT NULL, \
+               status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retired')), \
+               registered_at timestamptz NOT NULL DEFAULT now(), \
+               registered_by text NOT NULL CHECK (octet_length(registered_by) BETWEEN 1 AND {MAX_LOGIN_LEN}), \
+               PRIMARY KEY (name, version))"
+        ),
+    ]
 }
 
 fn v1() -> Vec<String> {
@@ -216,6 +254,19 @@ pub fn object_grants() -> Vec<String> {
         format!("REVOKE ALL ON ALL TABLES IN SCHEMA {s} FROM PUBLIC, {all_logins}"),
         format!("REVOKE ALL ON ALL SEQUENCES IN SCHEMA {s} FROM PUBLIC, {all_logins}"),
     ];
+    // The registry: the admin role reads and inserts, and may change only a recipe's status.
+    let c = SCHEMA_CONTROL;
+    out.push(format!(
+        "REVOKE ALL ON ALL TABLES IN SCHEMA {c} FROM PUBLIC, {all_logins}"
+    ));
+    out.push(format!(
+        "GRANT SELECT, INSERT ON {c}.schema_versions, {c}.recipes TO {}",
+        Role::Admin
+    ));
+    out.push(format!(
+        "GRANT UPDATE (status) ON {c}.recipes TO {}",
+        Role::Admin
+    ));
     for (name, args) in FUNCTIONS {
         out.push(format!(
             "REVOKE ALL ON FUNCTION {s}.{name}({args}) FROM PUBLIC, {others}"
@@ -276,6 +327,50 @@ mod tests {
                     "grants belong to object_grants: {st}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn migration_two_makes_the_registry_and_nothing_else() {
+        let all = migrations();
+        assert_eq!(all.len(), 2);
+        let sql = all[1].statements.join("\n");
+        assert!(sql.contains("CREATE TABLE bhdata_control.schema_versions"));
+        assert!(sql.contains("CREATE TABLE bhdata_control.recipes"));
+        assert_eq!(all[1].statements.len(), 2);
+        // Plans are kept as the exact canonical text, not as jsonb, so the hash can be checked.
+        assert!(sql.contains("plan text NOT NULL"), "{sql}");
+        assert!(sql.contains("PRIMARY KEY (name, version)"));
+        assert!(sql.contains("status IN ('active', 'retired')"));
+        assert!(sql.contains(&format!("BETWEEN 1 AND {MAX_LOGIN_LEN}")));
+        for st in &all[1].statements {
+            let up = st.to_uppercase();
+            assert!(!up.contains("SET ROLE") && !up.contains("GRANT "), "{st}");
+            assert!(up.starts_with("CREATE TABLE BHDATA_CONTROL."), "{st}");
+        }
+    }
+
+    #[test]
+    fn the_admin_may_read_and_insert_the_registry_and_change_only_a_status() {
+        let grants = object_grants().join("\n");
+        assert!(grants.contains(
+            "GRANT SELECT, INSERT ON bhdata_control.schema_versions, bhdata_control.recipes TO bhdata_admin"
+        ));
+        assert!(grants.contains("GRANT UPDATE (status) ON bhdata_control.recipes TO bhdata_admin"));
+        assert!(grants.contains("REVOKE ALL ON ALL TABLES IN SCHEMA bhdata_control FROM PUBLIC"));
+        // No DELETE or TRUNCATE anywhere in the registry's rights.
+        for line in grants.lines().filter(|l| l.contains("bhdata_control")) {
+            assert!(
+                !line.contains("DELETE") && !line.contains("TRUNCATE"),
+                "{line}"
+            );
+        }
+        // The registry's rights go to the admin role alone.
+        for line in grants
+            .lines()
+            .filter(|l| l.starts_with("GRANT") && l.contains("bhdata_control"))
+        {
+            assert!(line.ends_with("TO bhdata_admin"), "{line}");
         }
     }
 
@@ -358,9 +453,10 @@ mod tests {
             );
             assert!(!revoke.contains("bhdata_recipe"));
         }
-        assert!(!g
-            .iter()
-            .any(|s| s.starts_with("GRANT") && !s.contains("EXECUTE ON FUNCTION")));
+        // The only grants that are not function grants belong to the admin role, on the registry.
+        assert!(!g.iter().any(|s| s.starts_with("GRANT")
+            && !s.contains("EXECUTE ON FUNCTION")
+            && !s.ends_with("TO bhdata_admin")));
         assert!(g[0].starts_with(
             "REVOKE ALL ON ALL TABLES IN SCHEMA bhdata_internal FROM PUBLIC, bhdata_recipe"
         ));

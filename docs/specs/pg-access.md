@@ -130,3 +130,8 @@ Query execution helpers, prepared-statement caching and row decoding (they belon
 2. Login: role per pool through the `pg_ident` map ("go with what's the best").
 3. Pool defaults: 16, 8, 8, 2, 4 stay as placeholders until M11.
 4. Names: `bhdata`, `bhdata_internal`, `app`, `sql`, unchanged.
+
+## v0.3 addition (M3, slice C)
+
+A fourth schema, `bhdata_control`, holds the recipe registry (see `recipe-compiler.md`, sections 5 and 11). The owner role owns it; `bhdata_admin` has `USAGE` and, through `object_grants`, `SELECT` and `INSERT` on its two tables and `UPDATE (status)` on `recipes`; no other login role has any right in it. Internal migration 2 makes the tables, so the schema version is now 2. The schema owner check and the bootstrap list four schemas.
+

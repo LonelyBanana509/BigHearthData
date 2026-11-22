@@ -63,7 +63,9 @@ version = "0.0.0"
 dependencies = [
  "bhdata-backup",
  "bhdata-client",
+ "bhdata-control",
  "bhdata-engine",
+ "bhdata-recipe",
 ]
 
 [[package]]
@@ -78,8 +80,14 @@ name = "bhdata-control"
 version = "0.0.0"
 dependencies = [
  "bhdata-api",
+ "bhdata-engine",
  "bhdata-pg",
  "bhdata-recipe",
+ "bhdata-schema",
+ "bhdata-types",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

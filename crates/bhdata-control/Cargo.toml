@@ -14,3 +14,11 @@ workspace = true
 bhdata-api = { workspace = true }
 bhdata-recipe = { workspace = true }
 bhdata-pg = { workspace = true }
+bhdata-schema = { workspace = true }
+bhdata-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+
+[dev-dependencies]
+bhdata-engine = { workspace = true }

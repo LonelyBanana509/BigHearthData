@@ -16,5 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 bhdata-client = { workspace = true }
+bhdata-control = { workspace = true }
+bhdata-recipe = { workspace = true }
 bhdata-engine = { workspace = true }
 bhdata-backup = { workspace = true }

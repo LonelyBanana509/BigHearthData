@@ -105,7 +105,7 @@ Arrows are written as "depends on". Each crate may depend only on what is listed
 | `bhdata-kinds` | `bhdata-types`, `bhdata-schema`, `bhdata-recipe` |
 | `bhdata-derived` | `bhdata-api`, `bhdata-changelog`, `bhdata-pg` (implements `DerivedStore`) |
 | `bhdata-cache` | `bhdata-types` |
-| `bhdata-control` | `bhdata-api`, `bhdata-recipe`, `bhdata-pg` (implements `ControlPlane` and `RecipeStore`) |
+| `bhdata-control` | `bhdata-api`, `bhdata-recipe`, `bhdata-pg`, `bhdata-schema`, `bhdata-types` (implements `ControlPlane` and `RecipeStore`; it applies schemas, so it needs `bhdata-schema`; `bhdata-engine` as a dev dependency for the real-server test) |
 | `bhdata-planner` | `bhdata-api`, `bhdata-cache` (talks to shards only through `ShardBackend`) |
 | `bhdata-gateway` | `bhdata-proto`, `bhdata-api` (talks to the planner only through `RequestHandler`) |
 | `bhdata-backup` | `bhdata-api`, `bhdata-pg`, `bhdata-changelog` |
@@ -423,4 +423,4 @@ Short documents in `docs/specs/`, each a page or two, written before the milesto
 2. Admin UI: the plan only has the CLI (`bhdatactl`). A web UI is a later, separate crate.
 3. Whether to add an application namespace to generated ids if multi-tenant use is ever wanted. For now the login is the namespace.
 4. Batch runs: an admin action that runs one named recipe once per subject (for example interest for every user), reusing the import machinery. Needs its own spec before M4 is final (see `recipe-compiler.md`, section 1).
-5. M3 slice A is done (`bhdata-schema`: model, parse, validate, DDL, diff; pure, 17 tests, DDL run on PostgreSQL 16). Slice B is split: **B1** is done (`bhdata-recipe`: rejection codes, expression language, recipe model and parser, `Limits`; pure, 21 tests; `bhdata-schema` now shares its type and bound parsing and its decimal helpers), **B2** (compiler, lanes, plan, canonical form and hash, frozen starter recipes) is next. Slice C (`bhdata-control`, migration 2, `bhdatactl` commands) follows `recipe-compiler.md`, section 7.
+5. M3 slice A is done (`bhdata-schema`: model, parse, validate, DDL, diff; pure, 17 tests, DDL run on PostgreSQL 16). Slice B is split: **B1** is done (`bhdata-recipe`: rejection codes, expression language, recipe model and parser, `Limits`; pure, 21 tests; `bhdata-schema` now shares its type and bound parsing and its decimal helpers), **B2** is done (compiler checks, lanes, plan, canonical form and hash, five frozen starter recipes), and so is slice C (`bhdata-control`: registry, migration 2, grants; `bhdatactl schema apply`, `recipe register`, `recipe list`; real-server test on PostgreSQL 16). Left for M3's close: the run on PostgreSQL 17. See `recipe-compiler.md`, sections 10 and 11.

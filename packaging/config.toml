@@ -17,3 +17,11 @@ max_connections = 100
 maintenance_hour_utc = 3
 # Fixed once the database exists.
 locale = "C.UTF-8"
+
+[recipes]
+# Limits checked when a recipe is registered. A version that is already registered keeps
+# working if a limit is lowered later.
+max_steps = 16
+max_list_limit = 100
+max_result_values = 32
+max_result_bytes = 65536

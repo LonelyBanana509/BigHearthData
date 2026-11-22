@@ -114,7 +114,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
             first.applied.clone(),
             first.created_database
         ),
-        (1, vec![1], true)
+        (2, vec![1, 2], true)
     );
     let second = pg.boot().unwrap();
     assert_eq!(
@@ -123,7 +123,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
             second.applied,
             second.created_database
         ),
-        (1, vec![], false)
+        (2, vec![], false)
     );
 
     // A role with a wrong attribute is named, not fixed; fixing it by hand lets start-up go on.
@@ -161,7 +161,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
     assert!(matches!(pg.boot(), Err(BootstrapError::TooNew(_))));
     pg.psql(
         "bhdata",
-        "UPDATE bhdata_internal.meta SET value = '1' WHERE key = 'schema_version'",
+        "UPDATE bhdata_internal.meta SET value = '2' WHERE key = 'schema_version'",
     )
     .unwrap();
     assert!(pg.boot().unwrap().applied.is_empty());
@@ -471,7 +471,7 @@ fn a_running_server_with_old_login_rules_gets_the_new_ones_and_status_reports_th
     let (lines, ok) = host::status(&pg.spec, &sizes());
     assert!(ok, "{lines:?}");
     assert!(
-        lines.contains(&"database: schema version 1".to_string()),
+        lines.contains(&"database: schema version 2".to_string()),
         "{lines:?}"
     );
     assert!(

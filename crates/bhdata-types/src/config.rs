@@ -253,6 +253,32 @@ impl PoolConfig {
     }
 }
 
+/// Limits on recipes, checked when one is registered (spec `recipe-compiler.md`, sections 2 and 8).
+/// A registered version keeps working if a limit is lowered later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecipeConfig {
+    /// Most steps in one recipe.
+    pub max_steps: u32,
+    /// Largest `limit` of a `list` or a derived read.
+    pub max_list_limit: u32,
+    /// Most values in a result.
+    pub max_result_values: u32,
+    /// Largest result, in bytes.
+    pub max_result_bytes: u32,
+}
+
+impl Default for RecipeConfig {
+    fn default() -> Self {
+        RecipeConfig {
+            max_steps: 16,
+            max_list_limit: 100,
+            max_result_values: 32,
+            max_result_bytes: 64 * 1024,
+        }
+    }
+}
+
 /// The whole config. Every field has a default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -271,12 +297,14 @@ pub struct Config {
     pub engine: EngineConfig,
     /// Connection pools.
     pub pools: PoolConfig,
+    /// Recipe limits.
+    pub recipes: RecipeConfig,
 }
 
 impl Config {
     /// Checks the values that `serde` cannot: anything that must be above zero.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(&'static str, u64); 8] = [
+        let checks: [(&'static str, u64); 12] = [
             ("cache.ttl_ms", self.cache.ttl_ms),
             ("replicas.max_lag_ms", self.replicas.max_lag_ms),
             (
@@ -291,6 +319,19 @@ impl Config {
             ("pools.recipe_writers", u64::from(self.pools.recipe_writers)),
             ("pools.readers", u64::from(self.pools.readers)),
             ("pools.admin", u64::from(self.pools.admin)),
+            ("recipes.max_steps", u64::from(self.recipes.max_steps)),
+            (
+                "recipes.max_list_limit",
+                u64::from(self.recipes.max_list_limit),
+            ),
+            (
+                "recipes.max_result_values",
+                u64::from(self.recipes.max_result_values),
+            ),
+            (
+                "recipes.max_result_bytes",
+                u64::from(self.recipes.max_result_bytes),
+            ),
         ];
         for (field, value) in checks {
             if value == 0 {
@@ -317,6 +358,15 @@ mod tests {
             Duration::from_secs(90 * 24 * 3600)
         );
         assert_eq!(c.backup.daily_copies, 7);
+        assert_eq!(
+            (
+                c.recipes.max_steps,
+                c.recipes.max_list_limit,
+                c.recipes.max_result_values,
+                c.recipes.max_result_bytes
+            ),
+            (16, 100, 32, 65_536)
+        );
         assert_eq!(c.validate(), Ok(()));
     }
 

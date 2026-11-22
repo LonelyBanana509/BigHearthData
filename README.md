@@ -16,7 +16,7 @@ M1 (engine manager and installer) is built in three slices, each ending with `sc
 
 The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only the helper and the engine have code so far; the other crates are still empty.
 
-M3 (recipe compiler and registry) is built in slices A (`bhdata-schema`), B (`bhdata-recipe`: parser, checks, and the plan with its hash and grants) and C (`bhdata-control`, migration 2, `bhdatactl`). A and B are done; C is next. The spec is [docs/specs/recipe-compiler.md](docs/specs/recipe-compiler.md).
+M3 (recipe compiler and registry) is built in slices A (`bhdata-schema`), B (`bhdata-recipe`: parser, checks, and the plan with its hash and grants) and C (`bhdata-control`: the registry, migration 2 and the grants, with `bhdatactl schema apply`, `recipe register` and `recipe list`). All three are built; what is left is the run on PostgreSQL 17 (the sandbox only had 16). The spec is [docs/specs/recipe-compiler.md](docs/specs/recipe-compiler.md).
 
 ## Building and checking
 
