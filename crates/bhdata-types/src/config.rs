@@ -279,6 +279,67 @@ impl Default for RecipeConfig {
     }
 }
 
+/// The write path (spec `write-path.md`, sections 5, 7 and 8). The defaults are placeholders until
+/// the load runs of milestone M11 show what a real machine needs, like the pool sizes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WriterConfig {
+    /// Commands that may wait in a shard's queue.
+    pub queue_capacity: u32,
+    /// A new command is refused when the oldest queued one has waited longer than this.
+    pub max_queue_wait_ms: u64,
+    /// Tries of one command in all (the first plus retries after a deadlock or serialization failure).
+    pub max_attempts: u32,
+    /// The 99th-percentile commit time, over the last 10 seconds, that raises the latency alarm.
+    pub commit_latency_alarm_ms: u64,
+    /// How far ahead of the server's clock a request's creation time may be.
+    pub request_time_tolerance_secs: u64,
+    /// How long past the retry window a request record is kept before compaction.
+    pub retention_grace_secs: u64,
+    /// How often the compaction job runs.
+    pub compaction_interval_secs: u64,
+    /// Most records one compaction statement moves.
+    pub compaction_batch: u32,
+    /// How long a shutdown waits for running commands.
+    pub shutdown_drain_ms: u64,
+}
+
+impl Default for WriterConfig {
+    fn default() -> Self {
+        WriterConfig {
+            queue_capacity: 256,
+            max_queue_wait_ms: 500,
+            max_attempts: 3,
+            commit_latency_alarm_ms: 250,
+            request_time_tolerance_secs: 300,
+            retention_grace_secs: 3_600,
+            compaction_interval_secs: 60,
+            compaction_batch: 1_000,
+            shutdown_drain_ms: 5_000,
+        }
+    }
+}
+
+impl WriterConfig {
+    /// The longest a queued command may wait, as a duration.
+    #[must_use]
+    pub fn max_queue_wait(&self) -> Duration {
+        Duration::from_millis(self.max_queue_wait_ms)
+    }
+
+    /// How far ahead a request's creation time may be.
+    #[must_use]
+    pub fn request_time_tolerance(&self) -> Duration {
+        Duration::from_secs(self.request_time_tolerance_secs)
+    }
+
+    /// How long past the retry window a record is kept.
+    #[must_use]
+    pub fn retention_grace(&self) -> Duration {
+        Duration::from_secs(self.retention_grace_secs)
+    }
+}
+
 /// The whole config. Every field has a default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -299,12 +360,14 @@ pub struct Config {
     pub pools: PoolConfig,
     /// Recipe limits.
     pub recipes: RecipeConfig,
+    /// The write path.
+    pub writer: WriterConfig,
 }
 
 impl Config {
     /// Checks the values that `serde` cannot: anything that must be above zero.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(&'static str, u64); 12] = [
+        let checks: [(&'static str, u64); 21] = [
             ("cache.ttl_ms", self.cache.ttl_ms),
             ("replicas.max_lag_ms", self.replicas.max_lag_ms),
             (
@@ -332,6 +395,33 @@ impl Config {
                 "recipes.max_result_bytes",
                 u64::from(self.recipes.max_result_bytes),
             ),
+            (
+                "writer.queue_capacity",
+                u64::from(self.writer.queue_capacity),
+            ),
+            ("writer.max_queue_wait_ms", self.writer.max_queue_wait_ms),
+            ("writer.max_attempts", u64::from(self.writer.max_attempts)),
+            (
+                "writer.commit_latency_alarm_ms",
+                self.writer.commit_latency_alarm_ms,
+            ),
+            (
+                "writer.request_time_tolerance_secs",
+                self.writer.request_time_tolerance_secs,
+            ),
+            (
+                "writer.retention_grace_secs",
+                self.writer.retention_grace_secs,
+            ),
+            (
+                "writer.compaction_interval_secs",
+                self.writer.compaction_interval_secs,
+            ),
+            (
+                "writer.compaction_batch",
+                u64::from(self.writer.compaction_batch),
+            ),
+            ("writer.shutdown_drain_ms", self.writer.shutdown_drain_ms),
         ];
         for (field, value) in checks {
             if value == 0 {
@@ -376,6 +466,42 @@ mod tests {
         assert_eq!(SLOT_MASK, 0xfff);
         assert_eq!(SLOT_MASK + 1, u64::from(SLOT_COUNT));
         assert_eq!(0xdead_beef_u64 & SLOT_MASK, 0xeef);
+    }
+
+    #[test]
+    fn writer_defaults_are_the_ones_in_the_write_path_spec() {
+        let w = WriterConfig::default();
+        assert_eq!(w.queue_capacity, 256);
+        assert_eq!(w.max_queue_wait(), Duration::from_millis(500));
+        assert_eq!(w.max_attempts, 3);
+        assert_eq!(w.commit_latency_alarm_ms, 250);
+        assert_eq!(w.request_time_tolerance(), Duration::from_secs(300));
+        assert_eq!(w.retention_grace(), Duration::from_secs(3_600));
+        assert_eq!(w.compaction_interval_secs, 60);
+        assert_eq!(w.compaction_batch, 1_000);
+        assert_eq!(w.shutdown_drain_ms, 5_000);
+        assert_eq!(Config::default().writer, w);
+    }
+
+    #[test]
+    fn writer_settings_can_be_partial_but_not_misspelled_or_zero() {
+        let c: Config = toml::from_str("[writer]\nmax_attempts = 5\n").unwrap();
+        assert_eq!(c.writer.max_attempts, 5);
+        assert_eq!(c.writer.queue_capacity, 256);
+        assert!(toml::from_str::<Config>("[writer]\nmax_attempt = 5\n").is_err());
+        type Zero = (&'static str, fn(&mut WriterConfig));
+        let cases: [Zero; 5] = [
+            ("writer.queue_capacity", |w| w.queue_capacity = 0),
+            ("writer.max_queue_wait_ms", |w| w.max_queue_wait_ms = 0),
+            ("writer.max_attempts", |w| w.max_attempts = 0),
+            ("writer.compaction_batch", |w| w.compaction_batch = 0),
+            ("writer.shutdown_drain_ms", |w| w.shutdown_drain_ms = 0),
+        ];
+        for (field, set) in cases {
+            let mut c = Config::default();
+            set(&mut c.writer);
+            assert_eq!(c.validate(), Err(ConfigError::NotPositive { field }));
+        }
     }
 
     #[test]

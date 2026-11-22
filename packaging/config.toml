@@ -25,3 +25,15 @@ max_steps = 16
 max_list_limit = 100
 max_result_values = 32
 max_result_bytes = 65536
+
+[writer]
+# The write path (a placeholder set until the load runs show what a real machine needs).
+queue_capacity = 256
+max_queue_wait_ms = 500
+max_attempts = 3
+commit_latency_alarm_ms = 250
+request_time_tolerance_secs = 300
+retention_grace_secs = 3600
+compaction_interval_secs = 60
+compaction_batch = 1000
+shutdown_drain_ms = 5000

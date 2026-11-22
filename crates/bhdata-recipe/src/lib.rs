@@ -13,6 +13,7 @@
 
 pub mod canon;
 pub mod check;
+pub mod eval;
 pub mod expr;
 pub mod model;
 pub mod parse;
