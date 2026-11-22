@@ -20,7 +20,14 @@ allow = [
 confidence-threshold = 0.9
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
+# Two versions of a crate are allowed only when a dependency we do not control needs the second one.
+skip = [
+    # syn 2.x (tracing-attributes) next to syn 3.x (async-trait, serde_derive and others).
+    { name = "syn", reason = "upstream proc-macro crates are on different major versions" },
+    # wasi 0.11 (mio, through tokio) next to wasi 0.14 (wasite, through whoami, through tokio-postgres).
+    { name = "wasi", reason = "mio and whoami need different wasi versions" },
+]
 wildcards = "deny"
 # Workspace crates depend on each other by path, with no version number.
 allow-wildcard-paths = true

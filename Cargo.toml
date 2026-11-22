@@ -33,7 +33,7 @@ bhdata-writer = { path = "crates/bhdata-writer" }
 
 # External crates, pinned to the major (or minor for 0.x) line.
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 proptest = "1"
 toml = "0.8"
