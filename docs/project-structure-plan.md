@@ -422,3 +422,5 @@ Short documents in `docs/specs/`, each a page or two, written before the milesto
 1. Where derived stores live at stage 0 (PostgreSQL tables or in memory behind the trait). The plan assumes either works; M7 picks one.
 2. Admin UI: the plan only has the CLI (`bhdatactl`). A web UI is a later, separate crate.
 3. Whether to add an application namespace to generated ids if multi-tenant use is ever wanted. For now the login is the namespace.
+4. Batch runs: an admin action that runs one named recipe once per subject (for example interest for every user), reusing the import machinery. Needs its own spec before M4 is final (see `recipe-compiler.md`, section 1).
+5. M3 slice A is done (`bhdata-schema`: model, parse, validate, DDL, diff; pure, 17 tests, DDL run on PostgreSQL 16). Slices B (`bhdata-recipe`) and C (`bhdata-control`, migration 2, `bhdatactl` commands) follow `recipe-compiler.md`, section 7.
