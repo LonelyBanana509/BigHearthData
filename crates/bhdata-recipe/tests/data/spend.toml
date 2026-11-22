@@ -1,0 +1,23 @@
+[recipe]
+name    = "spend"
+subject = "users"
+args    = { amount = { type = "i64", min = 1, max = 1_000_000 } }
+
+[[step]]
+op = "ensure"
+
+[[step]]
+op     = "add"
+table  = "users"
+column = "balance"
+by     = "-amount"
+below  = "insufficient_funds"
+above  = "overflow"
+
+[[step]]
+op    = "insert"
+table = "entries"
+set   = { delta = "-amount", at = "now" }
+
+[recipe.result]
+return = ["balance"]

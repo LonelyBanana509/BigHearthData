@@ -1,0 +1,41 @@
+[recipe]
+name         = "give"
+subject      = "users"
+counterparty = "users"
+args         = { amount = { type = "i64", min = 1, max = 1_000_000 } }
+
+[[step]]
+op = "ensure"
+
+[[step]]
+op = "ensure"
+of = "counterparty"
+
+[[step]]
+op      = "read"
+of      = "counterparty"
+table   = "users"
+columns = ["balance"]
+
+[[step]]
+op     = "add"
+table  = "users"
+column = "balance"
+by     = "-amount"
+below  = "insufficient_funds"
+
+[[step]]
+op     = "add"
+of     = "counterparty"
+table  = "users"
+column = "balance"
+by     = "amount"
+above  = "overflow"
+
+[[step]]
+op    = "insert"
+table = "entries"
+set   = { delta = "-amount", at = "now" }
+
+[recipe.result]
+return = ["balance", "to.balance"]

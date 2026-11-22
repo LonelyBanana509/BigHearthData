@@ -163,7 +163,9 @@ version = "0.0.0"
 dependencies = [
  "bhdata-schema",
  "bhdata-types",
+ "proptest",
  "serde",
+ "sha2",
  "thiserror",
  "toml",
 ]

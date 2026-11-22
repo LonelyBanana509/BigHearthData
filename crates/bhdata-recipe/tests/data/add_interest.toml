@@ -1,0 +1,19 @@
+[recipe]
+name    = "add_interest"
+subject = "users"
+args    = { rate = { type = "decimal", precision = 9, scale = 6, min = "0", max = "1" } }
+
+[[step]]
+op      = "read"
+table   = "users"
+columns = ["interest"]
+
+[[step]]
+op     = "add"
+label  = "interest"
+table  = "users"
+column = "interest"
+by     = "round(interest * rate, 2, half_even)"
+
+[recipe.result]
+return = ["interest"]

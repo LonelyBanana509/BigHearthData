@@ -1,4 +1,4 @@
-# Recipe compiler and registry (v0.3)
+# Recipe compiler and registry (v0.4)
 
 Status: decisions confirmed by the owner (section 8). Written before M3. Input: the format in `recipe-format.md`. Crates: `bhdata-schema` (tables), `bhdata-recipe` (compiler and plan), `bhdata-control` (durable registry). Design sections 5, 6 and 9.
 
@@ -85,4 +85,21 @@ The table in section 2 did not say these; the code and its tests now do.
 10. **Derived stores** are a stub (`DerivedStore`: name, windows, freshest promise in ms) until the derived stores exist. A `read_derived` is the whole recipe: no other step, no counterparty.
 
 **Open question.** Decision 2 means a recipe cannot look up a price in a global table such as `shop`. Allowing a `read` of a global table by an argument key (a value the caller passes, never one read from a row) fits the "reached by key" rule and the global tables' purpose; it is left out of B2a until you decide.
+
+## 10. The plan (slice B2b, v0.4)
+
+`compile(schema, recipe, derived, limits)` runs the checks of section 2 and returns a `Plan`. Code: `plan.rs` (the plan and its builder) and `canon.rs` (canonical JSON and the hash). Frozen examples: `crates/bhdata-recipe/tests/data/` (`spend`, `give`, `daily`, `add_interest` and `history`, each with its `.plan.json` and `.hash`; `BHDATA_BLESS=1` rewrites them, and the diff is read before it is kept).
+
+1. **Canonical JSON.** Keys sorted, no whitespace, integers only, strings escaped one way. The plan carries `format: 1`. The hash is SHA-256 of that text as 64 lower-case hex digits. The version is not in the plan: the registry numbers a plan, and the hash says whether it is new. Reordering keys, spacing and comments never changes the hash (property test).
+2. **The writer evaluates expressions.** It does so in Rust with exact arithmetic, so the SQL has no arithmetic of its own. Every value is a bound parameter: `$1` is the id of the row's owner, `$2`... are the step's `params`, each with the type to send (decimals as text, timestamps as whole microseconds). Identifiers in the text come only from the validated schema.
+3. **`add`** is one `UPDATE` whose `WHERE` holds only the bounds that have a named error. After a miss, `miss_sql` locks and reads the row; the writer picks `below` or `above` by exact comparison, and runs the `UPDATE` again only if neither applies.
+4. **`read`** takes `FOR UPDATE` when a later step writes the same row (same key, same table).
+5. **`insert`** takes a transaction advisory lock on (table, owner) in a statement of its own, once per owner and table in a plan, and then writes `seq` as the owner's highest plus one. The lock needs no table privilege, so the recipe role gets no `UPDATE` right on the owner row. Without the lock, two concurrent inserts for one owner collide on the key (checked on PostgreSQL 16).
+6. **`ensure`** writes a start value into every non-nullable column: the allowed value nearest to zero (`min` if it is above zero, `max` if it is below), and `''`, `false`, the epoch or empty bytes for the other types. Nullable columns start `NULL`. `ON CONFLICT DO NOTHING` leaves an existing row alone.
+7. **Results** come from the `read` or `list` step that produced them, or from one final read of the subject row (`result_fetch`) for plain columns.
+8. **Step lists per key.** `shards` holds the step numbers of each key in order, with the savepoint before the first. A `check` is in none: where it runs is decided with the planner (M5).
+9. **Grants** are exact named columns per table and right (`Grants::statements`); `Grants::merge` gives the union over versions. A table is never granted whole, and no plan needs `DELETE`.
+10. **Bounds.** Steps, rows touched or returned (a `list` counts its limit), and a time limit of 2,000 ms enforced by the writer.
+
+Checked against a real PostgreSQL 16 (outside the test suite, to be made a `--ignored` test in slice C): every starter statement, the miss paths on both sides, decimals, the exact-maximum edge, the denied rights of the recipe role, and the insert race. Not yet done: PostgreSQL 17, and the registry, migration 2 and `bhdatactl` (slice C).
 

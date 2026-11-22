@@ -16,6 +16,8 @@ M1 (engine manager and installer) is built in three slices, each ending with `sc
 
 The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only the helper and the engine have code so far; the other crates are still empty.
 
+M3 (recipe compiler and registry) is built in slices A (`bhdata-schema`), B (`bhdata-recipe`: parser, checks, and the plan with its hash and grants) and C (`bhdata-control`, migration 2, `bhdatactl`). A and B are done; C is next. The spec is [docs/specs/recipe-compiler.md](docs/specs/recipe-compiler.md).
+
 ## Building and checking
 
 Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo install --locked cargo-deny cargo-audit`).

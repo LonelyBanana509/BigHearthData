@@ -1,0 +1,14 @@
+# The newest entries of a user, newest first. Covers `list` (and a result that is a list).
+[recipe]
+name    = "history"
+subject = "users"
+
+[[step]]
+op      = "list"
+table   = "entries"
+columns = ["delta", "at"]
+limit   = 10
+into    = "recent"
+
+[recipe.result]
+return = ["recent"]

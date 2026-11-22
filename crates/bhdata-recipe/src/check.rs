@@ -26,6 +26,18 @@ pub enum Lane {
     AllShards,
 }
 
+impl Lane {
+    /// The name used in plans. Frozen: plans and their hashes contain it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lane::OneShard => "one_shard",
+            Lane::TwoShards => "two_shards",
+            Lane::AllShards => "all_shards",
+        }
+    }
+}
+
 /// What a derived store promises (the real declarations arrive with the derived stores).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedStore {

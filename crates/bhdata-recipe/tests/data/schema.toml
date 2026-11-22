@@ -1,0 +1,20 @@
+# The schema the frozen starter recipes are compiled against.
+
+[[table]]
+name = "users"
+kind = "subject"
+columns = [
+  { name = "balance",    type = "i64", min = 0, max = 1_000_000_000 },
+  { name = "last_claim", type = "i64", min = 0 },
+  { name = "interest",   type = "decimal", precision = 18, scale = 2, min = "0" },
+  { name = "name",       type = "text", max_len = 64, nullable = true },
+]
+
+[[table]]
+name = "entries"
+kind = "child"
+owner = "users"
+columns = [
+  { name = "delta", type = "i64" },
+  { name = "at",    type = "timestamp" },
+]

@@ -1,0 +1,35 @@
+# A reward once per day. The caller passes the day number (days since the epoch), because
+# recipes have no time arithmetic; the check makes a second claim on the same day an error.
+[recipe]
+name    = "daily"
+subject = "users"
+args    = { day = { type = "i64", min = 1, max = 1_000_000 } }
+
+[[step]]
+op = "ensure"
+
+[[step]]
+op      = "read"
+table   = "users"
+columns = ["last_claim"]
+
+[[step]]
+op      = "check"
+label   = "once_a_day"
+require = "day > last_claim"
+error   = "already_claimed"
+
+[[step]]
+op    = "set"
+table = "users"
+set   = { last_claim = "day" }
+
+[[step]]
+op     = "add"
+table  = "users"
+column = "balance"
+by     = "100"
+above  = "overflow"
+
+[recipe.result]
+return = ["balance"]
