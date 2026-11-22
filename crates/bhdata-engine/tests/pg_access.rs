@@ -141,7 +141,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
     // A schema with another owner is named.
     pg.psql(
         "bhdata",
-        &format!("ALTER SCHEMA app OWNER TO {}", pg.spec.superuser),
+        &format!("ALTER SCHEMA app OWNER TO \"{}\"", pg.spec.superuser),
     )
     .unwrap();
     let text = pg.boot().unwrap_err().to_string();
