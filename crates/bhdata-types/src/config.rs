@@ -205,6 +205,54 @@ impl EngineConfig {
     }
 }
 
+/// Connection pools to the shard's PostgreSQL, one per database role (design section 10c).
+///
+/// The caps are checked against `engine.max_connections` at start-up (by `bhdata-pg`). The defaults
+/// are placeholders until the load runs of milestone M11 show what a real machine needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PoolConfig {
+    /// Connections of the recipe role (the write path).
+    pub recipe_writers: u32,
+    /// Connections of the reader role.
+    pub readers: u32,
+    /// Most connections SQL mode may use, in total (unused until M12).
+    pub sql_sessions: u32,
+    /// Connections of the admin role (migrations, registration, the backups' own work).
+    pub admin: u32,
+    /// Connections held back for backups and replication.
+    pub reserved_backup: u32,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        PoolConfig {
+            recipe_writers: 16,
+            readers: 8,
+            sql_sessions: 8,
+            admin: 2,
+            reserved_backup: 4,
+        }
+    }
+}
+
+impl PoolConfig {
+    /// Every connection the data layer may hold open at once, reserved ones included.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        [
+            self.recipe_writers,
+            self.readers,
+            self.sql_sessions,
+            self.admin,
+            self.reserved_backup,
+        ]
+        .into_iter()
+        .map(u64::from)
+        .sum()
+    }
+}
+
 /// The whole config. Every field has a default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -221,12 +269,14 @@ pub struct Config {
     pub backup: BackupConfig,
     /// The engine manager.
     pub engine: EngineConfig,
+    /// Connection pools.
+    pub pools: PoolConfig,
 }
 
 impl Config {
     /// Checks the values that `serde` cannot: anything that must be above zero.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(&'static str, u64); 5] = [
+        let checks: [(&'static str, u64); 8] = [
             ("cache.ttl_ms", self.cache.ttl_ms),
             ("replicas.max_lag_ms", self.replicas.max_lag_ms),
             (
@@ -238,6 +288,9 @@ impl Config {
                 u64::from(self.requests.history_retention_days),
             ),
             ("backup.daily_copies", u64::from(self.backup.daily_copies)),
+            ("pools.recipe_writers", u64::from(self.pools.recipe_writers)),
+            ("pools.readers", u64::from(self.pools.readers)),
+            ("pools.admin", u64::from(self.pools.admin)),
         ];
         for (field, value) in checks {
             if value == 0 {
@@ -400,5 +453,67 @@ mod tests {
                 field: "cache.ttl_ms"
             })
         );
+    }
+
+    #[test]
+    fn pool_defaults_total_38() {
+        let p = PoolConfig::default();
+        assert_eq!(
+            (
+                p.recipe_writers,
+                p.readers,
+                p.sql_sessions,
+                p.admin,
+                p.reserved_backup
+            ),
+            (16, 8, 8, 2, 4)
+        );
+        assert_eq!(p.total(), 38);
+        assert_eq!(Config::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn pool_section_reads_a_subset_and_refuses_unknown_keys() {
+        let c: Config = toml::from_str("[pools]\nreaders = 12\n").unwrap();
+        assert_eq!(c.pools.readers, 12);
+        assert_eq!(c.pools.recipe_writers, 16);
+        assert!(toml::from_str::<Config>("[pools]\nrecipe_writer = 3\n").is_err());
+    }
+
+    #[test]
+    fn pools_that_must_exist_cannot_be_zero_but_sql_and_backup_can() {
+        for (field, set) in [
+            (
+                "pools.recipe_writers",
+                (|p: &mut PoolConfig| p.recipe_writers = 0) as fn(&mut PoolConfig),
+            ),
+            ("pools.readers", |p| p.readers = 0),
+            ("pools.admin", |p| p.admin = 0),
+        ] {
+            let mut c = Config::default();
+            set(&mut c.pools);
+            assert_eq!(c.validate(), Err(ConfigError::NotPositive { field }));
+        }
+        let c = Config {
+            pools: PoolConfig {
+                sql_sessions: 0,
+                reserved_backup: 0,
+                ..PoolConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    #[test]
+    fn pool_total_does_not_overflow() {
+        let p = PoolConfig {
+            recipe_writers: u32::MAX,
+            readers: u32::MAX,
+            sql_sessions: u32::MAX,
+            admin: u32::MAX,
+            reserved_backup: u32::MAX,
+        };
+        assert_eq!(p.total(), 5 * u64::from(u32::MAX));
     }
 }

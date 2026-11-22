@@ -354,6 +354,8 @@ Each milestone is several small slices. Each ends green and zip-able.
 
 **M1 slices.** M1 is built as three slices, each ending with `scripts/check.sh` clean and a zip: **A** `bhdata-helper`, **B** `bhdata-engine`, **C** `packaging/` and the clean-VM run. The spec is `docs/specs/engine-manager.md`; it also lists which checks can only be run on a real VM. `upgrade.rs` and `tuning.rs` in `bhdata-engine` are proposed to move out of M1 (spec section 6); this table is unchanged until that is agreed.
 
+**M2 slices.** M2 is three slices, like M1: **A** pure parts of `bhdata-pg` (error mapping, connection budget, SQL text), **B** pools, bootstrap and the engine's login settings, **C** wiring into the host and the clean-VM run. The spec is `docs/specs/pg-access.md`. Slice A is done: `errors`, `conn_budget`, `roles` and `internal` in `bhdata-pg`, and `[pools]` in `bhdata-types`; the SQL was run once against PostgreSQL 16. Slice B adds the driver crates, so `cargo deny` runs on them then.
+
 **Thin slice first.** M0 to M4 need no network: the write-path suite runs in-process against a real private PostgreSQL, with recipes loaded from files. Finish and harden M4 before starting M5, because it is the riskiest part and everything else sits on it.
 
 ### Acceptance suites

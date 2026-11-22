@@ -117,6 +117,8 @@ name = "bhdata-pg"
 version = "0.0.0"
 dependencies = [
  "bhdata-types",
+ "proptest",
+ "thiserror",
 ]
 
 [[package]]
