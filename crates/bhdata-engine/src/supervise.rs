@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use crate::error::EngineError;
 use crate::instance::{
-    self, check_data_version, is_initialised, parse_pg_version, run_tool, tool_command,
+    self, check_data_version, is_initialised, parse_pg_version, retry_busy, run_tool, tool_command,
     write_atomic, InstanceSpec, PgVersion,
 };
 use crate::sys;
@@ -54,13 +54,14 @@ pub fn health_from_exit_code(code: Option<i32>) -> Health {
 
 pub fn health(spec: &InstanceSpec) -> Health {
     let port = spec.port.to_string();
-    let status = tool_command(&spec.bin("pg_isready"))
+    let mut command = tool_command(&spec.bin("pg_isready"));
+    command
         .args(["-h"])
         .arg(spec.run_dir())
         .args(["-p", &port, "-t", "2"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    let status = retry_busy(|| command.status());
     match status {
         Ok(s) => health_from_exit_code(s.code()),
         Err(_) => Health::Down,
@@ -69,12 +70,9 @@ pub fn health(spec: &InstanceSpec) -> Health {
 
 /// Whether a server process for this data folder exists (`pg_ctl status` exits 0).
 pub fn is_running(spec: &InstanceSpec) -> bool {
-    tool_command(&spec.bin("pg_ctl"))
-        .arg("status")
-        .arg("-D")
-        .arg(spec.data_dir())
-        .output()
-        .is_ok_and(|o| o.status.success())
+    let mut command = tool_command(&spec.bin("pg_ctl"));
+    command.arg("status").arg("-D").arg(spec.data_dir());
+    retry_busy(|| command.output()).is_ok_and(|o| o.status.success())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -22,6 +22,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use bhdata_types::{Durability, EngineConfig};
 
@@ -236,15 +237,33 @@ pub(crate) fn tool_command(program: &Path) -> Command {
     c
 }
 
+/// Runs `attempt` again, a few times, while starting a program fails because its file is "busy"
+/// (`ETXTBSY`): another thread had the file open for writing when this one forked, which only
+/// lasts until that child execs. Real programs are never written while they run; this matters when
+/// a program was just written (tests, or an update that replaces one). Any other error returns at
+/// once.
+pub(crate) fn retry_busy<T>(mut attempt: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut retries = 0;
+    loop {
+        match attempt() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && retries < 20 => {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Runs a PostgreSQL program to the end. Returns what it printed on stdout.
 pub(crate) fn run_tool(
     name: &'static str,
     program: &Path,
     args: &[&OsStr],
 ) -> Result<String, EngineError> {
-    let out = tool_command(program)
-        .args(args)
-        .output()
+    let mut command = tool_command(program);
+    command.args(args);
+    let out = retry_busy(|| command.output())
         .map_err(|e| EngineError::io(format!("could not start {}", program.display()), e))?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
@@ -780,6 +799,36 @@ mod tests {
         ));
         assert!(!dir.path().join("initdb-args.txt").exists());
         assert!(!spec.dir().exists());
+    }
+
+    #[test]
+    fn a_busy_program_file_is_tried_again_and_other_errors_are_not() {
+        let busy = || io::Error::from(io::ErrorKind::ExecutableFileBusy);
+        let mut calls = 0;
+        let r = retry_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(busy())
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(r.unwrap(), 3);
+
+        let mut calls = 0;
+        let r: io::Result<()> = retry_busy(|| {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert!(r.is_err() && calls == 1);
+
+        // It does not wait for ever.
+        let mut calls = 0;
+        let r: io::Result<()> = retry_busy(|| {
+            calls += 1;
+            Err(busy())
+        });
+        assert!(r.is_err() && calls == 21);
     }
 
     #[test]
