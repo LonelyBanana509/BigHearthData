@@ -30,7 +30,7 @@ This file says how the design becomes a Rust codebase: the workspace, the crates
 | Python client | Thin, in `clients/python/`, same frames | Needed for tests and for the first users |
 | Platform | Linux (Debian/Ubuntu); developed in WSL2 | Matches §1 supported platforms |
 | Control plane build | Storage, recipe registry, logins and audit first (M3, M5); admin API, metrics and retire checks at M8 | The writer and gateway need them long before M8 |
-| License | `MIT OR Apache-2.0` for every crate and the Python client | Rust convention, widest adoption, patent grant; `cargo deny` allows only compatible licenses |
+| License | `Apache-2.0` for every crate and the Python client | Patent grant, clear contribution terms, accepted by most companies; `cargo deny` allows only compatible licenses |
 
 ## 3. Named errors (shared by every crate)
 
@@ -45,8 +45,7 @@ bighearthdata/
 ├── Cargo.toml                  # workspace
 ├── rust-toolchain.toml
 ├── README.md
-├── LICENSE-MIT
-├── LICENSE-APACHE
+├── LICENSE                     # Apache-2.0
 ├── docs/
 │   ├── design/                 # bighearthdata-design-v1.0.md lives here
 │   ├── specs/                  # one spec per component, written before the component
@@ -330,7 +329,7 @@ Each milestone is several small slices. Each ends green and zip-able.
 
 | # | Milestone | Crates touched | Done when |
 |---|---|---|---|
-| M0 | Skeleton | all (empty), `bhdata-types` | Workspace builds; errors, ids, config exist; `scripts/check.sh` runs build, test, clippy, audit, deny and the dependency check; license files and the workspace license field are in place |
+| M0 | Skeleton | all (empty), `bhdata-types` | Workspace builds; errors, ids, config exist; `scripts/check.sh` runs build, test, clippy, audit, deny and the dependency check; the license file and the workspace license field are in place |
 | M1 | Engine manager and installer | `bhdata-helper`, `bhdata-engine`, `packaging/` | On a clean VM, one command installs everything and starts a private PostgreSQL; see acceptance suites below |
 | M2 | Postgres access and internal tables | `bhdata-pg` | Roles, internal tables and narrow functions exist; connection budget checked; error mapping tested |
 | M3 | Schema and recipes | `bhdata-schema`, `bhdata-recipe`, `bhdata-control` (registry, store) | A TOML schema becomes tables; a recipe compiles to a plan or is rejected with a reason; registered recipe versions survive a restart |
