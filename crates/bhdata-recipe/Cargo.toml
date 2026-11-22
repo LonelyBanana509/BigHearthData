@@ -13,3 +13,6 @@ workspace = true
 [dependencies]
 bhdata-types = { workspace = true }
 bhdata-schema = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }

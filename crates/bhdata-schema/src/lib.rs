@@ -10,7 +10,7 @@
 //! * [`diff`]: two models to a list of changes; destructive ones are flagged for an admin.
 
 pub mod ddl;
-mod decimal;
+pub mod decimal;
 pub mod diff;
 pub mod model;
 pub mod parse;

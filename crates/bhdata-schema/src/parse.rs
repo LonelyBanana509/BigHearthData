@@ -123,41 +123,8 @@ fn convert_column(table_path: &str, raw: RawColumn) -> Result<Column, SchemaErro
             Ok(())
         }
     };
-    let ty = match raw.ty.as_str() {
-        "i64" => ColumnType::I64,
-        "decimal" => match (raw.precision, raw.scale) {
-            (Some(precision), Some(scale)) => ColumnType::Decimal { precision, scale },
-            _ => {
-                return Err(SchemaError::new(
-                    path,
-                    "a decimal needs `precision` and `scale`",
-                ))
-            }
-        },
-        "text" | "bytes" => {
-            let Some(max_len) = raw.max_len else {
-                return Err(SchemaError::new(
-                    path,
-                    format!("a {} column needs `max_len`", raw.ty),
-                ));
-            };
-            if raw.ty == "text" {
-                ColumnType::Text { max_len }
-            } else {
-                ColumnType::Bytes { max_len }
-            }
-        }
-        "bool" => ColumnType::Bool,
-        "timestamp" => ColumnType::Timestamp,
-        other => {
-            return Err(SchemaError::new(
-                path,
-                format!(
-                    "unknown type {other:?} (use i64, decimal, text, bool, timestamp or bytes)"
-                ),
-            ))
-        }
-    };
+    let ty = parse_type(&raw.ty, raw.precision, raw.scale, raw.max_len)
+        .map_err(|m| SchemaError::new(&path, m))?;
     only(
         "max_len",
         matches!(ty, ColumnType::Text { .. } | ColumnType::Bytes { .. }),
@@ -176,21 +143,10 @@ fn convert_column(table_path: &str, raw: RawColumn) -> Result<Column, SchemaErro
     only("min", ty.is_numeric(), raw.min.is_some())?;
     only("max", ty.is_numeric(), raw.max.is_some())?;
     let bound = |value: Option<toml::Value>| -> Result<Option<i128>, SchemaError> {
-        let Some(value) = value else {
-            return Ok(None);
-        };
-        let scaled = match (ty, value) {
-            (ColumnType::I64, toml::Value::Integer(n)) => Ok(i128::from(n)),
-            (ColumnType::I64, _) => Err("an i64 bound is a whole number".to_string()),
-            (ColumnType::Decimal { precision, scale }, toml::Value::String(text)) => {
-                parse_scaled(&text, precision, scale)
-            }
-            (ColumnType::Decimal { .. }, _) => {
-                Err("a decimal bound is written as a string, like \"0.05\"".to_string())
-            }
-            _ => Ok(0),
-        };
-        scaled.map(Some).map_err(|m| SchemaError::new(&path, m))
+        value
+            .map(|v| parse_bound(ty, v))
+            .transpose()
+            .map_err(|m| SchemaError::new(&path, m))
     };
     Ok(Column {
         name: raw.name.clone(),
@@ -199,6 +155,62 @@ fn convert_column(table_path: &str, raw: RawColumn) -> Result<Column, SchemaErro
         min: bound(raw.min)?,
         max: bound(raw.max)?,
     })
+}
+
+/// A column or argument type from its words: `i64`, `decimal` (with `precision` and `scale`),
+/// `text` or `bytes` (with `max_len`), `bool`, `timestamp`. Shared with `bhdata-recipe`.
+///
+/// # Errors
+/// A plain sentence naming what is missing or unknown.
+pub fn parse_type(
+    name: &str,
+    precision: Option<u8>,
+    scale: Option<u8>,
+    max_len: Option<u32>,
+) -> Result<ColumnType, String> {
+    Ok(match name {
+        "i64" => ColumnType::I64,
+        "decimal" => match (precision, scale) {
+            (Some(precision), Some(scale)) => ColumnType::Decimal { precision, scale },
+            _ => return Err("a decimal needs `precision` and `scale`".to_string()),
+        },
+        "text" | "bytes" => {
+            let Some(max_len) = max_len else {
+                return Err(format!("a {name} column needs `max_len`"));
+            };
+            if name == "text" {
+                ColumnType::Text { max_len }
+            } else {
+                ColumnType::Bytes { max_len }
+            }
+        }
+        "bool" => ColumnType::Bool,
+        "timestamp" => ColumnType::Timestamp,
+        other => {
+            return Err(format!(
+                "unknown type {other:?} (use i64, decimal, text, bool, timestamp or bytes)"
+            ))
+        }
+    })
+}
+
+/// A `min` or `max` from TOML, scaled for the type: a whole number for `i64`, a string such as
+/// `"0.05"` for `decimal`. Shared with `bhdata-recipe`.
+///
+/// # Errors
+/// A plain sentence.
+pub fn parse_bound(ty: ColumnType, value: toml::Value) -> Result<i128, String> {
+    match (ty, value) {
+        (ColumnType::I64, toml::Value::Integer(n)) => Ok(i128::from(n)),
+        (ColumnType::I64, _) => Err("an i64 bound is a whole number".to_string()),
+        (ColumnType::Decimal { precision, scale }, toml::Value::String(text)) => {
+            parse_scaled(&text, precision, scale)
+        }
+        (ColumnType::Decimal { .. }, _) => {
+            Err("a decimal bound is written as a string, like \"0.05\"".to_string())
+        }
+        _ => Err("`min` and `max` apply to i64 and decimal only".to_string()),
+    }
 }
 
 #[cfg(test)]

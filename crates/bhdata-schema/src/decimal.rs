@@ -2,7 +2,7 @@
 
 /// Reads `text` (`-12.50`, no exponent, no spaces) as a value scaled by `10^scale`. Refuses more
 /// digits after the point than `scale`, and more digits in all than `precision`.
-pub(crate) fn parse_scaled(text: &str, precision: u8, scale: u8) -> Result<i128, String> {
+pub fn parse_scaled(text: &str, precision: u8, scale: u8) -> Result<i128, String> {
     let (negative, rest) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text),
@@ -38,7 +38,7 @@ pub(crate) fn parse_scaled(text: &str, precision: u8, scale: u8) -> Result<i128,
 }
 
 /// The text of a scaled value, always with exactly `scale` digits after the point.
-pub(crate) fn format_scaled(value: i128, scale: u8) -> String {
+pub fn format_scaled(value: i128, scale: u8) -> String {
     let scale = usize::from(scale);
     let mut digits = value.unsigned_abs().to_string();
     if digits.len() <= scale {

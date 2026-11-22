@@ -163,6 +163,9 @@ version = "0.0.0"
 dependencies = [
  "bhdata-schema",
  "bhdata-types",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

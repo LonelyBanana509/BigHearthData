@@ -1,4 +1,4 @@
-# Recipe and schema format (v0.2)
+# Recipe and schema format (v0.3)
 
 Status: decisions confirmed by the owner (section 5). Written before M3 (`bhdata-schema`, `bhdata-recipe`). Design: sections 6 and 9.
 Two TOML files: the **schema** (tables) and **recipes** (commands). Both are plain data; nothing in them is code.
@@ -64,6 +64,19 @@ return = ["balance"]             # columns of the subject row to return
 ```
 
 - **Operations** (the whole list): `ensure`, `read` (one row by key into a name), `check` (a condition or a named error), `add`, `set`, `insert` (a child row), `list` (child rows of one owner, with a `limit`, newest first), `read_derived` (see section 3). Nothing else exists: no joins, no scans, no raw SQL.
+- **Step fields** (v0.3, written with the parser; unknown or misplaced fields are `parse` rejections). Every step has `op` and an optional `label` (a name). Then:
+
+  | `op` | needs | may also have |
+  |---|---|---|
+  | `ensure` | | `of` |
+  | `read` | `table`, `columns` | `of` |
+  | `check` | `require` (a condition), `error` | |
+  | `add` | `table`, `column`, `by` | `of`, `below`, `above` |
+  | `set`, `insert` | `table`, `set` (a map of column to expression) | `of` |
+  | `list` | `table`, `columns`, `limit`, `into` | `of` |
+  | `read_derived` | `store`, `window`, `max_age_ms`, `limit` | |
+
+  `of` is `"subject"` (the default) or `"counterparty"` (only when `[recipe]` declares one); it says whose row or whose child rows the step reaches. A `read` of the counterparty's row names its values `to.<column>`, as expressions and `return` do. The `set` map is read sorted by column, so key order never matters. `list` returns its rows under the name `into`. `return` entries are a column of the subject row, a name from a `read` (`balance`, `to.balance`) or a `list` name, each at most once. With a counterparty, the argument name `to` is reserved: it carries the counterparty's id.
 - **Expressions** are only: an argument name, a column read by an earlier `read` step, a literal, `now`, the operators `+`, `-`, `*`, `/` and the comparisons `== != < <= > >=` with `and`/`or`/`not`, and four pure functions: `round(x, scale, mode)` (mode `half_even`, `half_up` or `down`), `min`, `max`, `abs`. Nothing else: no time or random functions, no text built from input. Every value reaches the database as a bound parameter.
 - **Rounding is always explicit.** `/` is allowed only as a direct argument of `round`. A `decimal` result with more digits than the column's scale must be wrapped in `round`, or the recipe is rejected (`rounding`): the database never rounds on its own.
 - **Named errors.** A built-in name from the error table, or a recipe-defined name of lower-case letters and `_`, at most 40 characters. A failed check rolls back to the savepoint, stores the error, and returns it (design section 9). Every error is reported with the recipe name and version, the step number and the step's optional `label`, and the request record keeps all four, so any failure can be traced to the exact step.
