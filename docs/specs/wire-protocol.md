@@ -1,6 +1,6 @@
 # Wire protocol (spec)
 
-**Status (2026-11-23): written, not built.** This is the spec the plan requires before M5. It fixes what travels between a client SDK and the gateway: the transport, the frames, the login, the messages, the limits, and the rules for safe retries. Everything here is a default, changeable until M5 slice A starts; section 12 lists the questions.
+**Status (2026-11-23): approved, not built.** All nine defaults in section 12 were accepted as they stand; M5 slice A is next. This is the spec the plan requires before M5. It fixes what travels between a client SDK and the gateway: the transport, the frames, the login, the messages, the limits, and the rules for safe retries. Section 12 keeps the questions and the answers (all yes, for now).
 
 ## 1. What this fixes
 
