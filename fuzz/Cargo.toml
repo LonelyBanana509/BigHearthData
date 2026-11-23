@@ -1,0 +1,51 @@
+# Fuzz targets for the wire protocol (wire-protocol spec, section 9, test W16): the frame reader, the
+# JSON parser, the message codec and the SCRAM message parsers. Lane P2.
+#
+# This is not a member of the main workspace (its root takes `crates/*` only), so it has its own
+# lock file and is not part of `scripts/check.sh`. Run with nightly Rust and cargo-fuzz:
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run frame        # also: json, message, scram
+[package]
+name = "bhdata-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bhdata-proto = { path = "../crates/bhdata-proto" }
+bhdata-types = { path = "../crates/bhdata-types" }
+
+[workspace]
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message"
+path = "fuzz_targets/message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scram"
+path = "fuzz_targets/scram.rs"
+test = false
+doc = false
+bench = false

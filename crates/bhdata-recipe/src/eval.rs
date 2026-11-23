@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use base64::Engine as _;
 use bhdata_schema::decimal::format_scaled;
 
 use crate::expr::{BinOp, Expr, RoundMode, UnOp};
@@ -401,6 +402,173 @@ fn numbers(a: &Value, b: &Value, what: &str) -> Result<Ordering, EvalError> {
     Ok(x.cmp(&y))
 }
 
+/// A JSON argument as the wire carries it. `bhdata-recipe` cannot see `bhdata-proto`, so the gateway
+/// hands each argument over in this plain form (wire-protocol spec, section 4). `Other` is `null`, a
+/// list or an object, named for the error message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireArg<'a> {
+    /// A JSON integer.
+    Int(i64),
+    /// A JSON string.
+    Str(&'a str),
+    /// `true` or `false`.
+    Bool(bool),
+    /// Anything else: `"null"`, `"a list"` or `"an object"`.
+    Other(&'static str),
+}
+
+impl WireArg<'_> {
+    fn describe(&self) -> &'static str {
+        match self {
+            WireArg::Int(_) => "a whole number",
+            WireArg::Str(_) => "text",
+            WireArg::Bool(_) => "true or false",
+            WireArg::Other(what) => what,
+        }
+    }
+}
+
+impl Value {
+    /// Converts one wire argument to the plan's type `ty` (`i64`, `decimal(p,s)`, `text(n)`, `bool`,
+    /// `timestamp`, `bytes(n)`), by the forms of the spec: `i64` and `timestamp` are JSON integers
+    /// (a timestamp in whole microseconds); a `decimal` is a string with exactly `s` digits after the
+    /// point (`"1.50"`), or a JSON integer; `text` is a string of at most `n` characters; `bytes` is a
+    /// canonical base64 string that decodes to at most `n` bytes.
+    ///
+    /// # Errors
+    /// `bad_arguments` naming `name`, for a wrong form, a number out of range, a text or bytes over
+    /// its length, or a type text this function does not know.
+    pub fn from_wire_arg(
+        name: &str,
+        ty: &str,
+        arg: WireArg<'_>,
+    ) -> Result<Value, bhdata_types::Error> {
+        let fail =
+            |why: String| bhdata_types::Error::BadArguments(format!("argument `{name}` {why}"));
+        let wrong = |want: &str| fail(format!("must be {want}, not {}", arg.describe()));
+        match ty {
+            "i64" => match arg {
+                WireArg::Int(n) => Ok(Value::I64(n)),
+                _ => Err(wrong("a whole number")),
+            },
+            "timestamp" => match arg {
+                WireArg::Int(n) => Ok(Value::Timestamp(n)),
+                _ => Err(wrong("a whole number of microseconds")),
+            },
+            "bool" => match arg {
+                WireArg::Bool(b) => Ok(Value::Bool(b)),
+                _ => Err(wrong("true or false")),
+            },
+            _ => {
+                let (kind, params) = ty
+                    .strip_suffix(')')
+                    .and_then(|t| t.split_once('('))
+                    .ok_or_else(|| fail(format!("has the unknown type `{ty}`")))?;
+                match kind {
+                    "decimal" => {
+                        let (p, s) = params
+                            .split_once(',')
+                            .and_then(|(p, s)| {
+                                Some((p.trim().parse::<u8>().ok()?, s.trim().parse::<u8>().ok()?))
+                            })
+                            .ok_or_else(|| fail(format!("has the unknown type `{ty}`")))?;
+                        decimal_arg(arg, p, s).map_err(|why| match why {
+                            ArgFault::Form => {
+                                wrong(&format!("a decimal with {s} digits after the point"))
+                            }
+                            ArgFault::Range(text) => fail(text),
+                        })
+                    }
+                    "text" => {
+                        let max: usize = params
+                            .trim()
+                            .parse()
+                            .map_err(|_| fail(format!("has the unknown type `{ty}`")))?;
+                        match arg {
+                            WireArg::Str(s) if s.chars().count() <= max => {
+                                Ok(Value::Text(s.to_string()))
+                            }
+                            WireArg::Str(_) => {
+                                Err(fail(format!("is longer than {max} characters")))
+                            }
+                            _ => Err(wrong("text")),
+                        }
+                    }
+                    "bytes" => {
+                        let max: usize = params
+                            .trim()
+                            .parse()
+                            .map_err(|_| fail(format!("has the unknown type `{ty}`")))?;
+                        match arg {
+                            WireArg::Str(s) => {
+                                // A base64 string is 4 characters for every 3 bytes: refuse the
+                                // obviously too long before decoding it.
+                                if s.len() > max.saturating_mul(4) / 3 + 4 {
+                                    return Err(fail(format!("is longer than {max} bytes")));
+                                }
+                                let bytes = base64::engine::general_purpose::STANDARD
+                                    .decode(s)
+                                    .map_err(|_| fail("is not canonical base64".to_string()))?;
+                                if bytes.len() > max {
+                                    return Err(fail(format!("is longer than {max} bytes")));
+                                }
+                                Ok(Value::Bytes(bytes))
+                            }
+                            _ => Err(wrong("a base64 string")),
+                        }
+                    }
+                    _ => Err(fail(format!("has the unknown type `{ty}`"))),
+                }
+            }
+        }
+    }
+}
+
+enum ArgFault {
+    /// Not the form a decimal takes on the wire.
+    Form,
+    /// The right form, but out of range for the type.
+    Range(String),
+}
+
+fn decimal_arg(arg: WireArg<'_>, precision: u8, scale: u8) -> Result<Value, ArgFault> {
+    match arg {
+        WireArg::Int(n) => {
+            let value = pow10(u32::from(scale))
+                .and_then(|f| i128::from(n).checked_mul(f))
+                .filter(|v| {
+                    pow10(u32::from(precision))
+                        .is_some_and(|top| v.unsigned_abs() < top.unsigned_abs())
+                })
+                .ok_or_else(|| {
+                    ArgFault::Range(format!("does not fit decimal({precision},{scale})"))
+                })?;
+            Ok(Value::Dec { value, scale })
+        }
+        WireArg::Str(text) => {
+            // Exactly `scale` digits after the point, so what a client reads back is what it sent.
+            let digits_after = text.split_once('.').map(|(_, frac)| frac.len());
+            let shaped = match digits_after {
+                Some(n) => n == usize::from(scale),
+                None => scale == 0,
+            };
+            if !shaped {
+                return Err(ArgFault::Form);
+            }
+            bhdata_schema::decimal::parse_scaled(text, precision, scale)
+                .map(|value| Value::Dec { value, scale })
+                .map_err(|e| {
+                    if e.contains("not a plain decimal") {
+                        ArgFault::Form
+                    } else {
+                        ArgFault::Range(format!("does not fit decimal({precision},{scale})"))
+                    }
+                })
+        }
+        _ => Err(ArgFault::Form),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,5 +884,186 @@ mod tests {
             let env = [("a", Value::I64(a)), ("b", Value::I64(b))];
             let _ = run(texts[pick], &env);
         }
+    }
+}
+
+#[cfg(test)]
+mod wire_arg_tests {
+    use super::*;
+    use bhdata_types::Error;
+
+    fn conv(ty: &str, arg: WireArg<'_>) -> Result<Value, Error> {
+        Value::from_wire_arg("x", ty, arg)
+    }
+
+    fn message(r: Result<Value, Error>) -> String {
+        match r {
+            Err(Error::BadArguments(text)) => text,
+            other => panic!("expected bad_arguments, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn whole_numbers_booleans_and_timestamps() {
+        assert_eq!(conv("i64", WireArg::Int(-5)), Ok(Value::I64(-5)));
+        assert_eq!(
+            conv("i64", WireArg::Int(i64::MAX)),
+            Ok(Value::I64(i64::MAX))
+        );
+        assert_eq!(
+            conv("timestamp", WireArg::Int(1_700_000_000_000_000)),
+            Ok(Value::Timestamp(1_700_000_000_000_000))
+        );
+        assert_eq!(conv("bool", WireArg::Bool(true)), Ok(Value::Bool(true)));
+        for (ty, arg) in [
+            ("i64", WireArg::Str("5")),
+            ("i64", WireArg::Bool(true)),
+            ("i64", WireArg::Other("null")),
+            ("timestamp", WireArg::Str("2026-01-01")),
+            ("bool", WireArg::Int(1)),
+            ("bool", WireArg::Str("true")),
+        ] {
+            assert!(
+                message(conv(ty, arg)).starts_with("argument `x` must be"),
+                "{ty} {arg:?}"
+            );
+        }
+        assert_eq!(
+            message(conv("i64", WireArg::Str("5"))),
+            "argument `x` must be a whole number, not text"
+        );
+    }
+
+    #[test]
+    fn decimals_are_strings_with_exactly_the_scale() {
+        let d = |value, scale| Ok(Value::Dec { value, scale });
+        assert_eq!(conv("decimal(18,2)", WireArg::Str("1.50")), d(150, 2));
+        assert_eq!(conv("decimal(18,2)", WireArg::Str("-0.05")), d(-5, 2));
+        assert_eq!(conv("decimal(18,2)", WireArg::Str("0.00")), d(0, 2));
+        assert_eq!(conv("decimal(18,0)", WireArg::Str("42")), d(42, 0));
+        assert_eq!(conv("decimal(18, 3)", WireArg::Str("2.500")), d(2_500, 3));
+        // An integer is also accepted.
+        assert_eq!(conv("decimal(18,2)", WireArg::Int(3)), d(300, 2));
+        assert_eq!(conv("decimal(18,2)", WireArg::Int(-3)), d(-300, 2));
+        for bad in [
+            "1.5", "1.500", "1", "1.", ".50", "+1.50", "1,50", "1e2", " 1.50", "1.50 ", "abc", "",
+        ] {
+            assert!(conv("decimal(18,2)", WireArg::Str(bad)).is_err(), "{bad:?}");
+        }
+        assert!(conv("decimal(18,0)", WireArg::Str("42.")).is_err());
+        assert!(conv("decimal(18,0)", WireArg::Str("42.0")).is_err());
+        assert!(conv("decimal(18,2)", WireArg::Bool(true)).is_err());
+        assert!(conv("decimal(18,2)", WireArg::Other("null")).is_err());
+    }
+
+    #[test]
+    fn a_decimal_must_fit_its_precision() {
+        assert!(conv("decimal(5,2)", WireArg::Str("999.99")).is_ok());
+        assert!(message(conv("decimal(5,2)", WireArg::Str("1000.00")))
+            .contains("does not fit decimal(5,2)"));
+        assert!(conv("decimal(5,2)", WireArg::Int(999)).is_ok());
+        assert!(message(conv("decimal(5,2)", WireArg::Int(1_000)))
+            .contains("does not fit decimal(5,2)"));
+        assert!(conv("decimal(38,2)", WireArg::Int(i64::MAX)).is_ok());
+        assert!(conv("decimal(10,0)", WireArg::Int(i64::MIN)).is_err());
+    }
+
+    #[test]
+    fn text_is_limited_in_characters() {
+        assert_eq!(
+            conv("text(4)", WireArg::Str("abcd")),
+            Ok(Value::Text("abcd".into()))
+        );
+        assert_eq!(
+            conv("text(4)", WireArg::Str("éééé")),
+            Ok(Value::Text("éééé".into()))
+        );
+        assert_eq!(
+            conv("text(4)", WireArg::Str("")),
+            Ok(Value::Text(String::new()))
+        );
+        assert_eq!(
+            message(conv("text(4)", WireArg::Str("abcde"))),
+            "argument `x` is longer than 4 characters"
+        );
+        assert!(conv("text(4)", WireArg::Int(1)).is_err());
+    }
+
+    #[test]
+    fn bytes_are_canonical_base64_limited_in_bytes() {
+        assert_eq!(
+            conv("bytes(8)", WireArg::Str("AAEC")),
+            Ok(Value::Bytes(vec![0, 1, 2]))
+        );
+        assert_eq!(conv("bytes(8)", WireArg::Str("")), Ok(Value::Bytes(vec![])));
+        assert_eq!(
+            conv("bytes(3)", WireArg::Str("AAEC")),
+            Ok(Value::Bytes(vec![0, 1, 2]))
+        );
+        assert!(message(conv("bytes(2)", WireArg::Str("AAEC"))).contains("longer than 2 bytes"));
+        assert!(message(conv("bytes(2)", WireArg::Str("AAECAwQF"))).contains("longer than 2 bytes"));
+        for bad in [
+            "AAE",
+            "AAE=C",
+            "AA=E",
+            "A",
+            "!!!!",
+            "AAEC AAEC",
+            "AB==",
+            "_-__",
+        ] {
+            assert!(conv("bytes(8)", WireArg::Str(bad)).is_err(), "{bad:?}");
+        }
+        assert!(conv("bytes(8)", WireArg::Int(1)).is_err());
+    }
+
+    #[test]
+    fn unknown_types_are_refused_and_name_the_argument() {
+        for ty in [
+            "float",
+            "decimal",
+            "decimal(x,2)",
+            "text()",
+            "text(-1)",
+            "bytes(a)",
+            "text(4",
+            "u8",
+        ] {
+            let text = message(conv(ty, WireArg::Int(1)));
+            assert!(text.starts_with("argument `x`"), "{ty}: {text}");
+        }
+    }
+
+    #[test]
+    fn every_type_text_the_planner_writes_is_understood() {
+        use bhdata_schema::model::ColumnType;
+        for ty in [
+            ColumnType::I64,
+            ColumnType::Bool,
+            ColumnType::Timestamp,
+            ColumnType::Text { max_len: 64 },
+            ColumnType::Bytes { max_len: 16 },
+            ColumnType::Decimal {
+                precision: 18,
+                scale: 2,
+            },
+        ] {
+            let text = crate::plan::type_text(ty);
+            let probe = match ty {
+                ColumnType::I64 | ColumnType::Timestamp => WireArg::Int(1),
+                ColumnType::Bool => WireArg::Bool(true),
+                ColumnType::Text { .. } | ColumnType::Bytes { .. } => WireArg::Str("AAEC"),
+                ColumnType::Decimal { .. } => WireArg::Str("1.00"),
+            };
+            assert!(conv(&text, probe).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_value_has_the_type_the_plan_asked_for() {
+        // `Value::ty` and the plan's own check (`type_matches` in bhdata-api) agree on the scale.
+        let v = conv("decimal(18,3)", WireArg::Str("1.000")).unwrap();
+        assert_eq!(v.ty(), Ty::Dec(3));
+        assert_eq!(v.number_text().as_deref(), Some("1.000"));
     }
 }

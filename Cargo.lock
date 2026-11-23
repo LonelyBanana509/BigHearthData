@@ -170,13 +170,22 @@ dependencies = [
 name = "bhdata-proto"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "bhdata-types",
+ "getrandom",
+ "hmac",
+ "pbkdf2",
+ "proptest",
+ "sha2",
+ "stringprep",
+ "thiserror",
 ]
 
 [[package]]
 name = "bhdata-recipe"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "bhdata-schema",
  "bhdata-types",
  "proptest",
@@ -714,6 +723,16 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pbkdf2"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
+dependencies = [
+ "digest",
+ "hmac",
 ]
 
 [[package]]
