@@ -6,8 +6,8 @@
 //! transaction with an id below the snapshot's `xmin` has finished, so nothing can still appear
 //! below it, and the reader sees a gap-free prefix in order.
 //!
-//! [`READ_AFTER_SQL`] is the statement. [`read_batch`] is the same rule on a list, so the rule is
-//! tested without a database; slice B tests the statement itself.
+//! [`READ_CHANGES_SQL`] is the statement. [`read_batch`] is the same rule on a list, so the rule is
+//! tested without a database; the write-path suite tests the statement itself.
 
 /// A place in the log: the writing transaction's id, then the sequence number within the log.
 /// Entries of one transaction share an `xid` and keep `seq` order.
@@ -30,15 +30,16 @@ impl Position {
     }
 }
 
-/// The read of one batch: entries after `($1, $2)` and below the horizon, in order. The position is
-/// compared as `(xid, seq)` with the parameters cast, so an index on `(xid, seq)` can be used. The horizon is
-/// the oldest transaction that may still be running or about to commit, taken from the reading
-/// transaction's own snapshot.
-pub const READ_AFTER_SQL: &str = "\
-SELECT xid::text::bigint, seq, tbl, row_key, op, subject FROM change_log \
-WHERE (xid, seq) > ($1::text::xid8, $2::bigint) \
-AND xid < pg_snapshot_xmin(pg_current_snapshot()) \
-ORDER BY xid, seq LIMIT $3";
+/// The read of one batch: entries after `($1, $2)` and below the horizon, in order, at most `$3`.
+///
+/// The work is done by `bhdata_internal.read_changes` (migration 3), which compares `(xid, seq)` as
+/// a pair, so an index on it can be used, and takes the horizon from its own snapshot: the oldest
+/// transaction that may still be running or about to commit. The position travels as text (`xid8`
+/// does not fit every client's integer). Run it in `READ COMMITTED`: a reader that keeps one old
+/// snapshot would keep an old horizon.
+pub const READ_CHANGES_SQL: &str = "\
+SELECT out_xid, out_seq, out_table, out_row_key, out_op, out_subject \
+FROM bhdata_internal.read_changes($1::text, $2::bigint, $3::integer)";
 
 /// The reading rule on a list of entries `(position, payload)`: those after `after` and with an
 /// `xid` below `horizon`, in position order, at most `limit`. `log` need not be sorted.
@@ -74,14 +75,13 @@ mod tests {
     }
 
     #[test]
-    fn the_statement_reads_after_a_position_below_the_horizon_in_order() {
+    fn the_statement_calls_the_reader_with_a_position_as_text_and_a_limit() {
         for part in [
-            "(xid, seq) > ($1::text::xid8, $2::bigint)",
-            "xid < pg_snapshot_xmin(pg_current_snapshot())",
-            "ORDER BY xid, seq",
-            "LIMIT $3",
+            "bhdata_internal.read_changes($1::text, $2::bigint, $3::integer)",
+            "out_xid",
+            "out_subject",
         ] {
-            assert!(READ_AFTER_SQL.contains(part), "{part}");
+            assert!(READ_CHANGES_SQL.contains(part), "{part}");
         }
     }
 

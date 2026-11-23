@@ -65,6 +65,11 @@ pub enum Error {
         /// The transaction to poll.
         transfer: TransferId,
     },
+    /// A named error that the recipe itself defines (`already_claimed`, ...). Nothing was applied.
+    /// The text is the recipe's own name for it. `insufficient_funds` and `overflow` keep their own
+    /// variants even when a recipe raises them.
+    #[error("recipe error: {0}")]
+    RecipeDefined(String),
     /// Something broke on our side. The text is for logs; clients get no detail.
     #[error("internal error: {0}")]
     Internal(String),
@@ -89,7 +94,20 @@ impl Error {
             Error::BadArguments(_) => ErrorKind::BadArguments,
             Error::WrongShard => ErrorKind::WrongShard,
             Error::Pending { .. } => ErrorKind::Pending,
+            Error::RecipeDefined(_) => ErrorKind::RecipeDefined,
             Error::Internal(_) => ErrorKind::Internal,
+        }
+    }
+
+    /// The error a client sees for a command that ended in the named error `name` of its recipe:
+    /// the fixed variant for `insufficient_funds` and `overflow`, and [`Error::RecipeDefined`] for
+    /// every other name (the compiler refuses any other built-in name in a recipe).
+    #[must_use]
+    pub fn from_recipe_name(name: &str) -> Error {
+        match name {
+            "insufficient_funds" => Error::InsufficientFunds,
+            "overflow" => Error::Overflow,
+            other => Error::RecipeDefined(other.to_string()),
         }
     }
 }
@@ -125,13 +143,15 @@ pub enum ErrorKind {
     WrongShard,
     /// `pending`
     Pending,
+    /// `recipe_defined`: a named error the recipe itself defines
+    RecipeDefined,
     /// `internal`
     Internal,
 }
 
 impl ErrorKind {
     /// Every named error, in the order of plan section 3.
-    pub const ALL: [ErrorKind; 15] = [
+    pub const ALL: [ErrorKind; 16] = [
         ErrorKind::Overloaded,
         ErrorKind::InsufficientFunds,
         ErrorKind::Overflow,
@@ -146,6 +166,7 @@ impl ErrorKind {
         ErrorKind::BadArguments,
         ErrorKind::WrongShard,
         ErrorKind::Pending,
+        ErrorKind::RecipeDefined,
         ErrorKind::Internal,
     ];
 
@@ -167,6 +188,7 @@ impl ErrorKind {
             ErrorKind::BadArguments => "bad_arguments",
             ErrorKind::WrongShard => "wrong_shard",
             ErrorKind::Pending => "pending",
+            ErrorKind::RecipeDefined => "recipe_defined",
             ErrorKind::Internal => "internal",
         }
     }
@@ -195,7 +217,7 @@ mod tests {
     use super::*;
 
     /// The exact list from plan section 3. If this test fails, the plan and the code disagree.
-    const PLAN_SECTION_3: [&str; 15] = [
+    const PLAN_SECTION_3: [&str; 16] = [
         "overloaded",
         "insufficient_funds",
         "overflow",
@@ -210,6 +232,7 @@ mod tests {
         "bad_arguments",
         "wrong_shard",
         "pending",
+        "recipe_defined",
         "internal",
     ];
 
@@ -248,6 +271,7 @@ mod tests {
             Error::BadArguments("amount".into()),
             Error::WrongShard,
             Error::Pending { transfer },
+            Error::RecipeDefined("already_claimed".into()),
             Error::Internal("boom".into()),
         ];
         let kinds: Vec<ErrorKind> = errors.iter().map(Error::kind).collect();
@@ -259,6 +283,19 @@ mod tests {
         for kind in ErrorKind::ALL {
             assert_eq!(kind.is_client_visible(), kind != ErrorKind::WrongShard);
         }
+    }
+
+    #[test]
+    fn a_recipe_name_becomes_the_fixed_error_or_a_recipe_defined_one() {
+        assert_eq!(
+            Error::from_recipe_name("insufficient_funds"),
+            Error::InsufficientFunds
+        );
+        assert_eq!(Error::from_recipe_name("overflow"), Error::Overflow);
+        let e = Error::from_recipe_name("already_claimed");
+        assert_eq!(e, Error::RecipeDefined("already_claimed".into()));
+        assert_eq!(e.kind(), ErrorKind::RecipeDefined);
+        assert_eq!(e.to_string(), "recipe error: already_claimed");
     }
 
     #[test]

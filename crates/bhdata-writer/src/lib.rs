@@ -8,9 +8,18 @@
 //! - [`admission`]: the queue's admission rule and the commit-latency watch (section 7).
 //! - [`result`]: the stored result, in canonical JSON (section 7).
 //!
-//! The execution of a command on a real connection arrives with slice B.
+//! M4 slice B adds what runs on a real connection:
+//!
+//! - [`exec`]: one command in one transaction, the heart of the write path (sections 3 and 5).
+//! - [`convert`]: values to and from the database, by the plan's types.
+//! - [`history`]: compaction and the history purge (section 8).
+//!
+//! The queue in front of it, the compaction job and the `ShardBackend` come with slice C.
 
 pub mod admission;
+pub mod convert;
+pub mod exec;
+pub mod history;
 pub mod result;
 pub mod retry;
 pub mod time_rule;

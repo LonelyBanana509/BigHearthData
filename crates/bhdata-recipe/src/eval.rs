@@ -73,6 +73,19 @@ impl Value {
     }
 }
 
+impl Value {
+    /// A decimal of exactly `scale` digits after the point, from the text the database returns for
+    /// a `numeric` column (the column's own scale, so there is never more than `scale` digits).
+    ///
+    /// # Errors
+    /// [`EvalError::Type`] if the text is not such a number.
+    pub fn dec_from_text(text: &str, scale: u8) -> Result<Value, EvalError> {
+        let value = bhdata_schema::decimal::parse_scaled(text, MAX_DIGITS, scale)
+            .map_err(|e| EvalError::Type(format!("decimal `{text}`: {e}")))?;
+        Ok(Value::Dec { value, scale })
+    }
+}
+
 /// What an expression is evaluated against.
 #[derive(Debug, Clone, Default)]
 pub struct Context {

@@ -12,6 +12,12 @@
 //! `schema_versions` and `recipes`. Only the admin role reaches them, and only to read, to insert,
 //! and to change a recipe's `status`; a registered row is never edited or deleted.
 //!
+//! Migration 3 (write-path spec, section 11) gives `requests` its subject, creation time, finish time and
+//! permanent flag, gives `change_log` the writing transaction's id (`xid`, so a reader can stop at a
+//! safe horizon), replaces `claim_request` and `finish_request`, adds `request_history`, and adds
+//! four functions for the admin role only: `read_changes`, `compact_requests`, `purge_history` and
+//! `trim_change_log`. The recipe role gets none of them.
+//!
 //! Migrations are append-only: a released version is never edited. Slice B runs each as the owner
 //! role (`SET ROLE bhdata_owner`), in one transaction together with [`record_version`]. A function
 //! that refuses a call raises [`crate::errors::SQLSTATE_BHDATA`].
@@ -22,7 +28,7 @@ use crate::errors::SQLSTATE_BHDATA;
 use crate::roles::{Role, SCHEMA_CONTROL, SCHEMA_INTERNAL};
 
 /// The schema version this release writes into `meta`.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// One numbered step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,11 +61,24 @@ impl std::fmt::Display for TooNew {
 
 impl std::error::Error for TooNew {}
 
-/// The narrow functions: name and argument types, as `GRANT` and `REVOKE` need them.
+/// The narrow functions of the write path (the recipe role may call them, nobody else): name and
+/// argument types, as `GRANT` and `REVOKE` need them.
 pub const FUNCTIONS: [(&str, &str); 3] = [
-    ("claim_request", "text, text, bytea, text, integer"),
+    (
+        "claim_request",
+        "text, text, bytea, text, integer, text, timestamptz, boolean",
+    ),
     ("finish_request", "text, text, text, text, bytea"),
     ("append_change", "text, text, text, text, text, text"),
+];
+
+/// The functions only the admin role may call (migration 3): the change-log reader and trim, and
+/// the request compaction and history purge. Same form as [`FUNCTIONS`].
+pub const ADMIN_FUNCTIONS: [(&str, &str); 4] = [
+    ("read_changes", "text, bigint, integer"),
+    ("compact_requests", "timestamptz, integer"),
+    ("purge_history", "timestamptz, integer, boolean"),
+    ("trim_change_log", "text, bigint, timestamptz, integer"),
 ];
 
 /// Reads the stored version. No row, or no table yet, means a new database: the caller treats a
@@ -90,6 +109,10 @@ pub fn migrations() -> Vec<Migration> {
         Migration {
             version: 2,
             statements: v2(),
+        },
+        Migration {
+            version: 3,
+            statements: v3(),
         },
     ]
 }
@@ -136,6 +159,184 @@ fn v2() -> Vec<String> {
                PRIMARY KEY (name, version))"
         ),
     ]
+}
+
+/// Migration 3: the write path's final shape (write-path spec, sections 3, 4, 6 and 8).
+///
+/// Nothing is written to these tables by M2 or M3, so the new `NOT NULL` columns are added with a
+/// default and the default is dropped again at once: every later insert must give a value.
+fn v3() -> Vec<String> {
+    let s = SCHEMA_INTERNAL;
+    let bad = SQLSTATE_BHDATA;
+    let mut out = vec![
+        format!(
+            "ALTER TABLE {s}.requests \
+               ADD COLUMN subject text NOT NULL DEFAULT '', \
+               ADD COLUMN requested_at timestamptz NOT NULL DEFAULT now(), \
+               ADD COLUMN finished_at timestamptz, \
+               ADD COLUMN permanent boolean NOT NULL DEFAULT false"
+        ),
+        format!(
+            "ALTER TABLE {s}.requests \
+               ALTER COLUMN subject DROP DEFAULT, \
+               ALTER COLUMN requested_at DROP DEFAULT, \
+               ALTER COLUMN permanent DROP DEFAULT"
+        ),
+        // The compaction scan: oldest finished, non-permanent records first.
+        format!(
+            "CREATE INDEX requests_compaction ON {s}.requests (requested_at) \
+               WHERE NOT permanent AND status <> 'running'"
+        ),
+        // A position is (xid, seq): see the horizon rule in `read_changes`.
+        format!(
+            "ALTER TABLE {s}.change_log ADD COLUMN xid xid8 NOT NULL DEFAULT pg_current_xact_id()"
+        ),
+        format!("CREATE INDEX change_log_position ON {s}.change_log (xid, seq)"),
+        format!(
+            "CREATE TABLE {s}.request_history (\
+               login_id text NOT NULL, \
+               request_id text NOT NULL, \
+               status text NOT NULL, \
+               error_kind text, \
+               recipe text, \
+               recipe_version integer, \
+               subject text NOT NULL, \
+               requested_at timestamptz NOT NULL, \
+               finished_at timestamptz NOT NULL, \
+               copied_at timestamptz, \
+               PRIMARY KEY (login_id, request_id), \
+               CONSTRAINT history_status CHECK (status IN ('done', 'failed')))"
+        ),
+        format!("CREATE INDEX request_history_finished ON {s}.request_history (finished_at)"),
+        format!("DROP FUNCTION {s}.claim_request(text, text, bytea, text, integer)"),
+    ];
+
+    out.push(format!(
+        "CREATE FUNCTION {s}.claim_request(\
+           p_login text, p_request_id text, p_payload_hash bytea, p_recipe text, p_recipe_version integer, \
+           p_subject text, p_requested_at timestamptz, p_permanent boolean) \
+         RETURNS TABLE (out_outcome text, out_status text, out_error_kind text, out_result bytea) \
+         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         DECLARE v_hash bytea; v_status text; v_error_kind text; v_result bytea; \
+         BEGIN \
+           INSERT INTO {s}.requests \
+             (login_id, request_id, payload_hash, recipe, recipe_version, status, subject, requested_at, permanent) \
+           VALUES (p_login, p_request_id, p_payload_hash, p_recipe, p_recipe_version, 'running', \
+                   p_subject, p_requested_at, p_permanent) \
+           ON CONFLICT (login_id, request_id) DO NOTHING; \
+           IF FOUND THEN \
+             RETURN QUERY SELECT 'new'::text, 'running'::text, NULL::text, NULL::bytea; \
+             RETURN; \
+           END IF; \
+           SELECT r.payload_hash, r.status, r.error_kind, r.result \
+             INTO v_hash, v_status, v_error_kind, v_result \
+             FROM {s}.requests r WHERE r.login_id = p_login AND r.request_id = p_request_id; \
+           IF v_hash IS DISTINCT FROM p_payload_hash THEN \
+             RETURN QUERY SELECT 'conflict'::text, NULL::text, NULL::text, NULL::bytea; \
+           ELSE \
+             RETURN QUERY SELECT 'same'::text, v_status, v_error_kind, v_result; \
+           END IF; \
+         END $$"
+    ));
+    // Same arguments as in migration 1, so the grants stay; only `finished_at` is new.
+    out.push(format!(
+        "CREATE OR REPLACE FUNCTION {s}.finish_request(\
+           p_login text, p_request_id text, p_status text, p_error_kind text, p_result bytea) \
+         RETURNS void \
+         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         BEGIN \
+           IF p_status NOT IN ('done', 'failed') THEN \
+             RAISE EXCEPTION 'finish_request: status must be done or failed' USING ERRCODE = '{bad}'; \
+           END IF; \
+           UPDATE {s}.requests \
+              SET status = p_status, error_kind = p_error_kind, result = p_result, finished_at = now() \
+            WHERE login_id = p_login AND request_id = p_request_id AND status = 'running'; \
+           IF NOT FOUND THEN \
+             RAISE EXCEPTION 'finish_request: no running request with that id' USING ERRCODE = '{bad}'; \
+           END IF; \
+         END $$"
+    ));
+    // The reader: entries after a position and below the horizon. Every transaction with an id
+    // below the snapshot's xmin has finished, so nothing can still appear below it. The caller must
+    // not run it in REPEATABLE READ (the snapshot would be the old one).
+    out.push(format!(
+        "CREATE FUNCTION {s}.read_changes(p_xid text, p_seq bigint, p_limit integer) \
+         RETURNS TABLE (out_xid text, out_seq bigint, out_table text, out_row_key text, out_op text, out_subject text) \
+         LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         BEGIN \
+           RETURN QUERY \
+             SELECT c.xid::text, c.seq, c.table_name, c.row_key, c.op, c.subject \
+               FROM {s}.change_log c \
+              WHERE (c.xid, c.seq) > (p_xid::xid8, p_seq) \
+                AND c.xid < pg_snapshot_xmin(pg_current_snapshot()) \
+              ORDER BY c.xid, c.seq \
+              LIMIT p_limit; \
+         END $$"
+    ));
+    // Compaction: delete and insert are one statement, so a crash leaves both or neither, and a
+    // `running` record or a permanent one is never touched. A record another transaction holds
+    // locked is skipped, not waited for.
+    out.push(format!(
+        "CREATE FUNCTION {s}.compact_requests(p_cutoff timestamptz, p_batch integer) \
+         RETURNS bigint \
+         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         DECLARE v_moved bigint; \
+         BEGIN \
+           WITH moved AS ( \
+             DELETE FROM {s}.requests r \
+              WHERE (r.login_id, r.request_id) IN ( \
+                    SELECT q.login_id, q.request_id FROM {s}.requests q \
+                     WHERE q.requested_at < p_cutoff AND NOT q.permanent AND q.status <> 'running' \
+                     ORDER BY q.requested_at LIMIT p_batch FOR UPDATE SKIP LOCKED) \
+             RETURNING r.login_id, r.request_id, r.status, r.error_kind, r.recipe, r.recipe_version, \
+                       r.subject, r.requested_at, r.finished_at) \
+           INSERT INTO {s}.request_history \
+             (login_id, request_id, status, error_kind, recipe, recipe_version, subject, requested_at, finished_at) \
+           SELECT m.login_id, m.request_id, m.status, m.error_kind, m.recipe, m.recipe_version, \
+                  m.subject, m.requested_at, COALESCE(m.finished_at, m.requested_at) \
+             FROM moved m \
+           ON CONFLICT (login_id, request_id) DO UPDATE \
+             SET status = EXCLUDED.status, error_kind = EXCLUDED.error_kind, recipe = EXCLUDED.recipe, \
+                 recipe_version = EXCLUDED.recipe_version, subject = EXCLUDED.subject, \
+                 requested_at = EXCLUDED.requested_at, finished_at = EXCLUDED.finished_at, copied_at = NULL; \
+           GET DIAGNOSTICS v_moved = ROW_COUNT; \
+           RETURN v_moved; \
+         END $$"
+    ));
+    // With `p_require_copied` (stage 2, once the central history copy exists) only rows already
+    // copied may go.
+    out.push(format!(
+        "CREATE FUNCTION {s}.purge_history(p_cutoff timestamptz, p_batch integer, p_require_copied boolean) \
+         RETURNS bigint \
+         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         DECLARE v_gone bigint; \
+         BEGIN \
+           DELETE FROM {s}.request_history h \
+            WHERE (h.login_id, h.request_id) IN ( \
+                  SELECT q.login_id, q.request_id FROM {s}.request_history q \
+                   WHERE q.finished_at < p_cutoff AND (NOT p_require_copied OR q.copied_at IS NOT NULL) \
+                   ORDER BY q.finished_at LIMIT p_batch); \
+           GET DIAGNOSTICS v_gone = ROW_COUNT; \
+           RETURN v_gone; \
+         END $$"
+    ));
+    // Entries at or before the position every reader has passed, and older than the retention.
+    out.push(format!(
+        "CREATE FUNCTION {s}.trim_change_log(p_xid text, p_seq bigint, p_before timestamptz, p_batch integer) \
+         RETURNS bigint \
+         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ \
+         DECLARE v_gone bigint; \
+         BEGIN \
+           DELETE FROM {s}.change_log c \
+            WHERE c.seq IN ( \
+                  SELECT q.seq FROM {s}.change_log q \
+                   WHERE (q.xid, q.seq) <= (p_xid::xid8, p_seq) AND q.changed_at < p_before \
+                   ORDER BY q.xid, q.seq LIMIT p_batch); \
+           GET DIAGNOSTICS v_gone = ROW_COUNT; \
+           RETURN v_gone; \
+         END $$"
+    ));
+    out
 }
 
 fn v1() -> Vec<String> {
@@ -276,6 +477,22 @@ pub fn object_grants() -> Vec<String> {
             Role::Recipe
         ));
     }
+    // The admin-only functions: everyone else, the recipe role included, is revoked.
+    let not_admin: Vec<&str> = Role::LOGIN
+        .iter()
+        .filter(|r| **r != Role::Admin)
+        .map(|r| r.name())
+        .collect();
+    let not_admin = not_admin.join(", ");
+    for (name, args) in ADMIN_FUNCTIONS {
+        out.push(format!(
+            "REVOKE ALL ON FUNCTION {s}.{name}({args}) FROM PUBLIC, {not_admin}"
+        ));
+        out.push(format!(
+            "GRANT EXECUTE ON FUNCTION {s}.{name}({args}) TO {}",
+            Role::Admin
+        ));
+    }
     out
 }
 
@@ -333,7 +550,7 @@ mod tests {
     #[test]
     fn migration_two_makes_the_registry_and_nothing_else() {
         let all = migrations();
-        assert_eq!(all.len(), 2);
+        assert!(all.len() >= 2);
         let sql = all[1].statements.join("\n");
         assert!(sql.contains("CREATE TABLE bhdata_control.schema_versions"));
         assert!(sql.contains("CREATE TABLE bhdata_control.recipes"));
@@ -382,38 +599,59 @@ mod tests {
         assert_eq!((MAX_LOGIN_LEN, MAX_ID_LEN), (64, 128));
     }
 
+    /// Every statement of every migration, oldest first.
+    fn all_statements() -> Vec<String> {
+        migrations()
+            .into_iter()
+            .flat_map(|m| m.statements)
+            .collect()
+    }
+
+    /// The newest definition of a function: the last `CREATE [OR REPLACE] FUNCTION` for it.
+    fn latest_definition(name: &str) -> Option<String> {
+        let plain = format!("CREATE FUNCTION {SCHEMA_INTERNAL}.{name}(");
+        let replace = format!("CREATE OR REPLACE FUNCTION {SCHEMA_INTERNAL}.{name}(");
+        all_statements()
+            .into_iter()
+            .rfind(|s| s.starts_with(&plain) || s.starts_with(&replace))
+    }
+
     #[test]
-    fn every_listed_function_is_created_exactly_once_and_locked_down() {
-        let stmts = v1();
-        for (name, _) in FUNCTIONS {
-            let created: Vec<&String> = stmts
-                .iter()
-                .filter(|s| s.starts_with(&format!("CREATE FUNCTION {SCHEMA_INTERNAL}.{name}(")))
-                .collect();
-            assert_eq!(created.len(), 1, "{name}");
-            let sql = created[0];
+    fn every_listed_function_is_defined_and_locked_down() {
+        for (name, _) in FUNCTIONS.iter().chain(ADMIN_FUNCTIONS.iter()) {
+            let sql = latest_definition(name).unwrap_or_else(|| panic!("{name} is not defined"));
             assert!(sql.contains("SECURITY DEFINER"), "{name}");
             assert!(
                 sql.contains("SET search_path = pg_catalog, pg_temp"),
                 "{name}"
             );
         }
-        let functions = stmts
+        // No function exists that the two lists do not name (so none is left without a grant).
+        let mut created: Vec<String> = all_statements()
             .iter()
-            .filter(|s| s.starts_with("CREATE FUNCTION"))
-            .count();
-        assert_eq!(functions, FUNCTIONS.len());
+            .filter_map(|s| {
+                let rest = s
+                    .strip_prefix("CREATE FUNCTION ")
+                    .or_else(|| s.strip_prefix("CREATE OR REPLACE FUNCTION "))?;
+                let rest = rest.strip_prefix(&format!("{SCHEMA_INTERNAL}."))?;
+                Some(rest.split('(').next()?.to_string())
+            })
+            .collect();
+        created.sort();
+        created.dedup();
+        let mut listed: Vec<String> = FUNCTIONS
+            .iter()
+            .chain(ADMIN_FUNCTIONS.iter())
+            .map(|(n, _)| (*n).to_string())
+            .collect();
+        listed.sort();
+        assert_eq!(created, listed);
     }
 
     #[test]
     fn function_argument_lists_match_their_grants() {
-        let stmts = v1();
-        // claim_request: five parameters, finish_request: five, append_change: six.
-        for (name, args) in FUNCTIONS {
-            let sql = stmts
-                .iter()
-                .find(|s| s.starts_with(&format!("CREATE FUNCTION {SCHEMA_INTERNAL}.{name}(")))
-                .unwrap();
+        for (name, args) in FUNCTIONS.iter().chain(ADMIN_FUNCTIONS.iter()) {
+            let sql = latest_definition(name).unwrap();
             let params = sql
                 .split(") RETURNS")
                 .next()
@@ -475,6 +713,94 @@ mod tests {
                 .position(|s| s.starts_with("GRANT") && s.contains(&format!(".{name}(")))
                 .unwrap();
             assert!(r < e, "{name}");
+        }
+    }
+
+    #[test]
+    fn migration_three_changes_the_tables_the_spec_names() {
+        let all = migrations();
+        assert_eq!(all[2].version, 3);
+        let sql = all[2].statements.join("\n");
+        for part in [
+            "ADD COLUMN subject text NOT NULL",
+            "ADD COLUMN requested_at timestamptz NOT NULL",
+            "ADD COLUMN finished_at timestamptz",
+            "ADD COLUMN permanent boolean NOT NULL",
+            "ADD COLUMN xid xid8 NOT NULL DEFAULT pg_current_xact_id()",
+            "CREATE INDEX change_log_position ON bhdata_internal.change_log (xid, seq)",
+            "CREATE TABLE bhdata_internal.request_history",
+            "DROP FUNCTION bhdata_internal.claim_request(text, text, bytea, text, integer)",
+        ] {
+            assert!(sql.contains(part), "{part}");
+        }
+        // The history keeps no payload hash and no result: it can never re-apply anything.
+        let history = all[2]
+            .statements
+            .iter()
+            .find(|s| s.starts_with("CREATE TABLE bhdata_internal.request_history"))
+            .unwrap();
+        assert!(!history.contains("payload_hash") && !history.contains("result"));
+        // The temporary defaults that let the columns be added are dropped again.
+        assert!(sql.contains("ALTER COLUMN subject DROP DEFAULT"));
+        assert!(sql.contains("ALTER COLUMN requested_at DROP DEFAULT"));
+        assert!(sql.contains("ALTER COLUMN permanent DROP DEFAULT"));
+    }
+
+    #[test]
+    fn the_reader_stops_at_the_horizon_and_orders_by_position() {
+        let sql = latest_definition("read_changes").unwrap();
+        for part in [
+            "(c.xid, c.seq) > (p_xid::xid8, p_seq)",
+            "c.xid < pg_snapshot_xmin(pg_current_snapshot())",
+            "ORDER BY c.xid, c.seq",
+            "LIMIT p_limit",
+        ] {
+            assert!(sql.contains(part), "{part}");
+        }
+    }
+
+    #[test]
+    fn compaction_moves_in_one_statement_and_never_touches_running_or_permanent_records() {
+        let sql = latest_definition("compact_requests").unwrap();
+        assert!(sql.contains("WITH moved AS ( DELETE FROM bhdata_internal.requests"));
+        assert!(sql.contains("INSERT INTO bhdata_internal.request_history"));
+        assert!(sql.contains("NOT q.permanent AND q.status <> 'running'"));
+        assert!(sql.contains("FOR UPDATE SKIP LOCKED"));
+        // One DELETE statement and one INSERT statement, joined in a single WITH.
+        assert_eq!(sql.matches("DELETE FROM").count(), 1);
+    }
+
+    #[test]
+    fn the_replaced_claim_takes_the_new_columns_and_the_finish_stamps_the_time() {
+        let claim = latest_definition("claim_request").unwrap();
+        assert!(claim.contains("p_subject text, p_requested_at timestamptz, p_permanent boolean"));
+        assert!(claim.contains("ON CONFLICT (login_id, request_id) DO NOTHING"));
+        let finish = latest_definition("finish_request").unwrap();
+        assert!(finish.starts_with("CREATE OR REPLACE FUNCTION"));
+        assert!(finish.contains("finished_at = now()"));
+    }
+
+    #[test]
+    fn admin_functions_are_revoked_from_everyone_else_and_granted_to_the_admin() {
+        let g = object_grants();
+        for (name, args) in ADMIN_FUNCTIONS {
+            let target = format!("{SCHEMA_INTERNAL}.{name}({args})");
+            let revoke = g
+                .iter()
+                .find(|s| s.starts_with("REVOKE") && s.contains(&target))
+                .unwrap();
+            assert!(
+                revoke.contains("FROM PUBLIC, bhdata_recipe, bhdata_sql, bhdata_reader"),
+                "{revoke}"
+            );
+            assert!(!revoke.contains("bhdata_admin"));
+            assert!(g.contains(&format!(
+                "GRANT EXECUTE ON FUNCTION {target} TO bhdata_admin"
+            )));
+            // Never granted to the recipe role.
+            assert!(!g.iter().any(|s| s.starts_with("GRANT")
+                && s.contains(&target)
+                && s.ends_with("bhdata_recipe")));
         }
     }
 

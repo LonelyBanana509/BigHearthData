@@ -26,4 +26,4 @@ bhdata-sqlmode: bhdata-api bhdata-changelog bhdata-pg
 bhdata-stress: bhdata-client
 bhdata-txn: bhdata-api bhdata-pg
 bhdata-types:
-bhdata-writer: bhdata-api bhdata-changelog bhdata-pg
+bhdata-writer: bhdata-api bhdata-changelog bhdata-engine bhdata-pg bhdata-schema

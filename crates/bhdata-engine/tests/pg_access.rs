@@ -114,7 +114,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
             first.applied.clone(),
             first.created_database
         ),
-        (2, vec![1, 2], true)
+        (3, vec![1, 2, 3], true)
     );
     let second = pg.boot().unwrap();
     assert_eq!(
@@ -123,7 +123,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
             second.applied,
             second.created_database
         ),
-        (2, vec![], false)
+        (3, vec![], false)
     );
 
     // A role with a wrong attribute is named, not fixed; fixing it by hand lets start-up go on.
@@ -161,7 +161,7 @@ fn bootstrap_is_idempotent_and_refuses_what_is_wrong() {
     assert!(matches!(pg.boot(), Err(BootstrapError::TooNew(_))));
     pg.psql(
         "bhdata",
-        "UPDATE bhdata_internal.meta SET value = '2' WHERE key = 'schema_version'",
+        "UPDATE bhdata_internal.meta SET value = '3' WHERE key = 'schema_version'",
     )
     .unwrap();
     assert!(pg.boot().unwrap().applied.is_empty());
@@ -216,7 +216,7 @@ fn each_role_logs_in_as_itself_and_the_recipe_role_is_locked_down() {
             assert_eq!(v, want, "{name}");
         }
         // Reader and SQL roles cannot call the narrow functions either.
-        let call = "SELECT * FROM bhdata_internal.claim_request('l','z','\\x01','r',1)";
+        let call = "SELECT * FROM bhdata_internal.claim_request('l','z','\\x01','r',1,'s',now(),false)";
         let r = pools.reader().await.unwrap();
         assert_eq!(pg_error(&r.query(call, &[]).await.unwrap_err()).kind, PgErrorKind::Forbidden);
         let s = pools.sql().await.unwrap();
@@ -237,7 +237,7 @@ fn claim_request_returns_new_same_or_conflict_and_concurrent_retries_get_one_res
         let pools = std::sync::Arc::new(Pools::connect(&pg.target(), &sizes()).await.unwrap());
         let c = pools.recipe().await.unwrap();
         let claim = |id: &str, hash: &str| {
-            format!("SELECT * FROM bhdata_internal.claim_request('l','{id}','\\x{hash}','rec',1)")
+            format!("SELECT * FROM bhdata_internal.claim_request('l','{id}','\\x{hash}','rec',1,'s',now(),false)")
         };
 
         let r = c.query_one(&claim("r1", "01"), &[]).await.unwrap();
@@ -288,7 +288,7 @@ fn claim_request_returns_new_same_or_conflict_and_concurrent_retries_get_one_res
             let tx = c.transaction().await.unwrap();
             let row = tx
                 .query_one(
-                    "SELECT * FROM bhdata_internal.claim_request('l','cc','\\x07','r',1)",
+                    "SELECT * FROM bhdata_internal.claim_request('l','cc','\\x07','r',1,'s',now(),false)",
                     &[],
                 )
                 .await
@@ -306,7 +306,7 @@ fn claim_request_returns_new_same_or_conflict_and_concurrent_retries_get_one_res
         let c = pools.recipe().await.unwrap();
         let row = c
             .query_one(
-                "SELECT * FROM bhdata_internal.claim_request('l','cc','\\x07','r',1)",
+                "SELECT * FROM bhdata_internal.claim_request('l','cc','\\x07','r',1,'s',now(),false)",
                 &[],
             )
             .await
@@ -471,7 +471,7 @@ fn a_running_server_with_old_login_rules_gets_the_new_ones_and_status_reports_th
     let (lines, ok) = host::status(&pg.spec, &sizes());
     assert!(ok, "{lines:?}");
     assert!(
-        lines.contains(&"database: schema version 2".to_string()),
+        lines.contains(&"database: schema version 3".to_string()),
         "{lines:?}"
     );
     assert!(

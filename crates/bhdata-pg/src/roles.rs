@@ -84,19 +84,22 @@ impl Role {
     /// (spec section 6). The owner never logs in, so it has none.
     #[must_use]
     pub fn timeouts(self) -> Option<Timeouts> {
-        let t = |lock, statement, idle| {
+        let t = |lock, statement, idle, deadlock| {
             Some(Timeouts {
                 lock,
                 statement,
                 idle_in_transaction: idle,
+                deadlock,
             })
         };
         match self {
             Role::Owner => None,
-            Role::Recipe => t("2s", "5s", "10s"),
-            Role::Reader => t("1s", "5s", "5s"),
-            Role::Sql => t("2s", "30s", "30s"),
-            Role::Admin => t("10s", "10min", "1min"),
+            // 100 ms, not PostgreSQL's 1 s: a deadlock must be found well inside the role's 2 s
+            // `lock_timeout`, so the writer can retry it (write-path spec, decision 13).
+            Role::Recipe => t("2s", "5s", "10s", Some("100ms")),
+            Role::Reader => t("1s", "5s", "5s", None),
+            Role::Sql => t("2s", "30s", "30s", None),
+            Role::Admin => t("10s", "10min", "1min", None),
         }
     }
 }
@@ -107,7 +110,7 @@ impl fmt::Display for Role {
     }
 }
 
-/// The three timeouts of one role, as PostgreSQL time strings.
+/// The timeouts of one role, as PostgreSQL time strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
     /// `lock_timeout`.
@@ -116,6 +119,8 @@ pub struct Timeouts {
     pub statement: &'static str,
     /// `idle_in_transaction_session_timeout`.
     pub idle_in_transaction: &'static str,
+    /// `deadlock_timeout`, only where the default (1 s) is wrong for the role.
+    pub deadlock: Option<&'static str>,
 }
 
 /// Creates the role if it is missing. An existing role is left alone, whatever its attributes:
@@ -138,7 +143,7 @@ pub fn timeout_statements(role: Role) -> Vec<String> {
         return Vec::new();
     };
     let name = role.name();
-    vec![
+    let mut out = vec![
         format!("ALTER ROLE {name} SET lock_timeout = '{}'", t.lock),
         format!(
             "ALTER ROLE {name} SET statement_timeout = '{}'",
@@ -148,7 +153,11 @@ pub fn timeout_statements(role: Role) -> Vec<String> {
             "ALTER ROLE {name} SET idle_in_transaction_session_timeout = '{}'",
             t.idle_in_transaction
         ),
-    ]
+    ];
+    if let Some(d) = t.deadlock {
+        out.push(format!("ALTER ROLE {name} SET deadlock_timeout = '{d}'"));
+    }
+    out
 }
 
 /// Creates the database, owned by the owner role. Run only when [`DATABASE_EXISTS_QUERY`] found
@@ -164,7 +173,9 @@ pub const SCHEMA_RIGHTS: [(&str, Role, &str); 16] = [
     (SCHEMA_INTERNAL, Role::Recipe, "USAGE"), // to call the three functions, nothing else
     (SCHEMA_INTERNAL, Role::Reader, ""),
     (SCHEMA_INTERNAL, Role::Sql, ""),
-    (SCHEMA_INTERNAL, Role::Admin, ""), // reaches the internal tables only by SET ROLE bhdata_owner
+    // Usage lets the admin call the admin-only functions (change-log reader, compaction, trim). It
+    // reaches the internal tables themselves only by SET ROLE bhdata_owner.
+    (SCHEMA_INTERNAL, Role::Admin, "USAGE"),
     (SCHEMA_CONTROL, Role::Recipe, ""),
     (SCHEMA_CONTROL, Role::Reader, ""),
     (SCHEMA_CONTROL, Role::Sql, ""),
@@ -498,9 +509,17 @@ mod tests {
         assert_eq!(t(Role::Owner), None);
         assert!(timeout_statements(Role::Owner).is_empty());
         let s = timeout_statements(Role::Recipe);
-        assert_eq!(s.len(), 3);
+        assert_eq!(s.len(), 4);
         assert_eq!(s[0], "ALTER ROLE bhdata_recipe SET lock_timeout = '2s'");
         assert!(s[2].contains("idle_in_transaction_session_timeout = '10s'"));
+        // Only the recipe role needs a short deadlock timeout (write-path spec, decision 13).
+        assert_eq!(
+            s[3],
+            "ALTER ROLE bhdata_recipe SET deadlock_timeout = '100ms'"
+        );
+        for r in [Role::Reader, Role::Sql, Role::Admin] {
+            assert_eq!(timeout_statements(r).len(), 3, "{r}");
+        }
     }
 
     #[test]
@@ -527,8 +546,13 @@ mod tests {
             if s == SCHEMA_INTERNAL {
                 assert!(!rights.contains("CREATE"), "{r} may create in {s}");
                 assert!(
-                    r == Role::Recipe || rights.is_empty(),
+                    r == Role::Recipe || r == Role::Admin || rights.is_empty(),
                     "{r} has rights on {s}"
+                );
+                // The admin may call the admin-only functions and nothing more.
+                assert!(
+                    r != Role::Admin || rights == "USAGE",
+                    "{r} on {s}: {rights}"
                 );
             }
             if r == Role::Recipe {

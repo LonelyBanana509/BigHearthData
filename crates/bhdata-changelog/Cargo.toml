@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 bhdata-types = { workspace = true }
 bhdata-pg = { workspace = true }
+thiserror = { workspace = true }
+tokio-postgres = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

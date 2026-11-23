@@ -22,26 +22,53 @@ pub fn value_json(v: &Value) -> Json {
     }
 }
 
-/// The result of a command that is `done`.
+/// One entry of a result: a single value, or the rows of a `list` step (each row is its columns in
+/// order).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Item {
+    /// A value of a `read`, or of the final read of the subject row.
+    One(Value),
+    /// The rows of a `list`.
+    Rows(Vec<Vec<(String, Value)>>),
+}
+
+fn item_json(item: &Item) -> Json {
+    match item {
+        Item::One(v) => value_json(v),
+        Item::Rows(rows) => Json::Arr(
+            rows.iter()
+                .map(|row| {
+                    Json::Obj(
+                        row.iter()
+                            .map(|(name, v)| (name.clone(), value_json(v)))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The result of a command that is `done`, from values and lists.
 ///
 /// # Errors
 /// `internal` if the plan produced more values or more bytes than the recipe limits allow (the
 /// compiler checks the count; this is the second wall, and the bytes are only known now).
-pub fn done_result(
-    values: &[(String, Value)],
+pub fn done_result_items(
+    items: &[(String, Item)],
     max_values: usize,
     max_bytes: usize,
 ) -> Result<String, Error> {
-    if values.len() > max_values {
+    if items.len() > max_values {
         return Err(Error::Internal(format!(
             "a result has {} values, more than the limit of {max_values}",
-            values.len()
+            items.len()
         )));
     }
     let map = Json::Obj(
-        values
+        items
             .iter()
-            .map(|(name, v)| (name.clone(), value_json(v)))
+            .map(|(name, item)| (name.clone(), item_json(item)))
             .collect(),
     );
     let text = Json::obj([("values", map)]).canonical();
@@ -52,6 +79,22 @@ pub fn done_result(
         )));
     }
     Ok(text)
+}
+
+/// The result of a command that is `done`, from single values only.
+///
+/// # Errors
+/// As [`done_result_items`].
+pub fn done_result(
+    values: &[(String, Value)],
+    max_values: usize,
+    max_bytes: usize,
+) -> Result<String, Error> {
+    let items: Vec<(String, Item)> = values
+        .iter()
+        .map(|(n, v)| (n.clone(), Item::One(v.clone())))
+        .collect();
+    done_result_items(&items, max_values, max_bytes)
 }
 
 /// The result of a command that ended in a named error.
@@ -190,6 +233,33 @@ mod tests {
             Err(Error::Internal(_))
         ));
         assert!(done_result(&values, 2, 64).is_ok());
+    }
+
+    #[test]
+    fn a_list_is_an_array_of_objects_in_row_order() {
+        let rows = vec![
+            vec![
+                ("at".to_string(), Value::Timestamp(5)),
+                ("delta".to_string(), Value::I64(-2)),
+            ],
+            vec![
+                ("at".to_string(), Value::Timestamp(4)),
+                ("delta".to_string(), Value::I64(3)),
+            ],
+        ];
+        let items = vec![
+            ("recent".to_string(), Item::Rows(rows)),
+            ("n".to_string(), Item::One(Value::I64(1))),
+        ];
+        assert_eq!(
+            done_result_items(&items, 32, 65_536).unwrap(),
+            r#"{"values":{"n":1,"recent":[{"at":5,"delta":-2},{"at":4,"delta":3}]}}"#
+        );
+        let empty = vec![("recent".to_string(), Item::Rows(vec![]))];
+        assert_eq!(
+            done_result_items(&empty, 32, 65_536).unwrap(),
+            r#"{"values":{"recent":[]}}"#
+        );
     }
 
     #[test]

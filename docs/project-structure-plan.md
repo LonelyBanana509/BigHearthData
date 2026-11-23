@@ -36,7 +36,7 @@ This file says how the design becomes a Rust codebase: the workspace, the crates
 
 Defined once in `bhdata-types`, mapped to wire codes once in `bhdata-proto`:
 
-`overloaded` (with retry hint), `insufficient_funds`, `overflow`, `already_exists`, `already_imported`, `request_id_conflict`, `request_expired`, `unauthorized`, `rate_limited`, `locked_out`, `unknown_recipe`, `bad_arguments`, `wrong_shard` (internal; the planner retries), `pending` (cross-shard still running), `internal`.
+`overloaded` (with retry hint), `insufficient_funds`, `overflow`, `already_exists`, `already_imported`, `request_id_conflict`, `request_expired`, `unauthorized`, `rate_limited`, `locked_out`, `unknown_recipe`, `bad_arguments`, `wrong_shard` (internal; the planner retries), `pending` (cross-shard still running), `recipe_defined` (carries the name a recipe gave its own error, for example `already_claimed`; added in M4), `internal`.
 
 ## 4. Workspace layout
 
@@ -355,6 +355,8 @@ Each milestone is several small slices. Each ends green and zip-able.
 **M1 slices.** M1 is built as three slices, each ending with `scripts/check.sh` clean and a zip: **A** `bhdata-helper`, **B** `bhdata-engine`, **C** `packaging/` and the clean-VM run. The spec is `docs/specs/engine-manager.md`; it also lists which checks can only be run on a real VM. `upgrade.rs` and `tuning.rs` in `bhdata-engine` are proposed to move out of M1 (spec section 6); this table is unchanged until that is agreed.
 
 **M2 slices.** M2 is three slices, like M1: **A** pure parts of `bhdata-pg` (error mapping, connection budget, SQL text), **B** pools, bootstrap and the engine's login settings, **C** wiring into the host and the clean-VM run. The spec is `docs/specs/pg-access.md`. Slice A is done: `errors`, `conn_budget`, `roles` and `internal` in `bhdata-pg`, and `[pools]` in `bhdata-types`; the SQL was run once against PostgreSQL 16. Slice B is done: the driver crates (`tokio`, `tokio-postgres`, `deadpool-postgres`), `pool` and `bootstrap` in `bhdata-pg`, the engine's `pg_hba`/`pg_ident` and reserved-connections settings, and `crates/bhdata-engine/tests/pg_access.rs` (four ignored tests, run on PostgreSQL 16). Slice C is built: `host::run` checks the budget, runs the bootstrap and proves every pool role can log in; a running server is reloaded for the new login rules; `bhdatactl status` shows the schema version and the pool budget. What is left is the clean-VM run on PostgreSQL 17, including an in-place upgrade of an M1 install.
+
+**M4 slices.** M4 is three slices, like M1 to M3. The spec is `docs/specs/write-path.md`. **A** (pure parts) and **B** (migration 3, `exec.rs`, change-log reader and trim, `history.rs`, tests 1 to 13, 17 and 18 on PostgreSQL 16) are done. **C** (queue wired to real connections, the compaction job, the host, `bhdatactl call`, tests 14 to 16 and 19, then the clean-VM run on PostgreSQL 17) is left.
 
 **Thin slice first.** M0 to M4 need no network: the write-path suite runs in-process against a real private PostgreSQL, with recipes loaded from files. Finish and harden M4 before starting M5, because it is the riskiest part and everything else sits on it.
 

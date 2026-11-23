@@ -18,6 +18,8 @@ The spec is [docs/specs/engine-manager.md](docs/specs/engine-manager.md). Only t
 
 M3 (recipe compiler and registry) is built in slices A (`bhdata-schema`), B (`bhdata-recipe`: parser, checks, and the plan with its hash and grants) and C (`bhdata-control`: the registry, migration 2 and the grants, with `bhdatactl schema apply`, `recipe register` and `recipe list`). All three are built; what is left is the run on PostgreSQL 17 (the sandbox only had 16). The spec is [docs/specs/recipe-compiler.md](docs/specs/recipe-compiler.md).
 
+M4 (the write path) is in progress: slice A (the pure parts) and slice B (migration 3, the one-command transaction in `bhdata-writer/src/exec.rs`, the change-log reader and trim, and the real-server write-path suite) are built; slice C (the queue, the compaction job, the host wiring and `bhdatactl call`) is left. The spec is [docs/specs/write-path.md](docs/specs/write-path.md). The real-server tests need PostgreSQL and a non-root user: `BHDATA_PG_BIN=/usr/lib/postgresql/17/bin cargo test -p bhdata-writer --test write_path -- --ignored`.
+
 ## Building and checking
 
 Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo install --locked cargo-deny cargo-audit`).
