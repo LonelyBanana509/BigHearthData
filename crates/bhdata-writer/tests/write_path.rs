@@ -1,5 +1,5 @@
 //! The write-path suite against a real PostgreSQL (spec `write-path.md`, section 10): tests 1 to
-//! 13, 17 and 18, each on a private instance. Ignored by default; it needs the server installed
+//! 13 and 15 to 19, each on a private instance. Ignored by default; it needs the server installed
 //! and an ordinary user (PostgreSQL refuses to run as root):
 //!
 //! ```text
@@ -12,15 +12,15 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command as Proc, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bhdata_api::recipe::eval::Value;
 use bhdata_api::recipe::{compile, parse_recipe, Limits, Plan};
-use bhdata_api::shard::{Command, Retention, Status};
+use bhdata_api::shard::{Command, Outcome, Retention, ShardBackend, Status};
 use bhdata_api::types::config::PoolConfig;
 use bhdata_api::types::{
     Clock, Config, Durability, Error, LoginId, ManualClock, RecipeVersion, RequestId, SubjectId,
-    Timestamp,
+    SystemClock, Timestamp,
 };
 use bhdata_changelog::{read_after, Op, Position};
 use bhdata_engine::instance::{self, InstanceSpec};
@@ -32,6 +32,7 @@ use bhdata_schema::ddl::create_schema;
 use bhdata_schema::parse_schema;
 use bhdata_writer::exec::{ExecConfig, Executor, Finished};
 use bhdata_writer::history;
+use bhdata_writer::queue::WriteQueue;
 use bhdata_writer::startup::verify_synchronous_commit;
 use bhdata_writer::time_rule::compaction_cutoff;
 
@@ -58,6 +59,8 @@ struct Rig {
     rt: tokio::runtime::Runtime,
     pools: Arc<Pools>,
     clock: Arc<ManualClock>,
+    /// What the executor and the commands read: the manual clock, unless a test brings its own.
+    time: Arc<dyn Clock>,
     exec: Arc<Executor>,
     plans: BTreeMap<&'static str, Arc<Plan>>,
 }
@@ -68,6 +71,19 @@ impl Rig {
     }
 
     fn with_owner_check(port: u16, owns: Option<bhdata_writer::exec::OwnsFn>) -> Rig {
+        Rig::build(port, owns, None)
+    }
+
+    /// A rig whose executor and commands use `time`, for tests that must measure real durations.
+    fn with_clock(port: u16, time: Arc<dyn Clock>) -> Rig {
+        Rig::build(port, None, Some(time))
+    }
+
+    fn build(
+        port: u16,
+        owns: Option<bhdata_writer::exec::OwnsFn>,
+        own_time: Option<Arc<dyn Clock>>,
+    ) -> Rig {
         let bin = std::env::var("BHDATA_PG_BIN").expect("set BHDATA_PG_BIN");
         let base = std::env::temp_dir().join(format!("bhwp-{}-{port}", std::process::id()));
         let spec = InstanceSpec {
@@ -119,8 +135,9 @@ impl Rig {
         };
         let pools = Arc::new(rt.block_on(Pools::connect(&target, &sizes)).expect("pools"));
         let clock = Arc::new(ManualClock::new(Timestamp::from_unix_millis(T0)));
+        let time: Arc<dyn Clock> = own_time.unwrap_or_else(|| clock.clone());
         let cfg = ExecConfig::from_config(&Config::default());
-        let mut exec = Executor::new(pools.clone(), clock.clone(), cfg);
+        let mut exec = Executor::new(pools.clone(), time.clone(), cfg);
         if let Some(owns) = owns {
             exec = exec.with_owner_check(owns);
         }
@@ -130,6 +147,7 @@ impl Rig {
             rt,
             pools,
             clock,
+            time,
             exec: Arc::new(exec),
             plans,
         }
@@ -179,7 +197,7 @@ impl Rig {
         Command {
             login_id: LoginId::new(login).expect("login id"),
             request_id: RequestId::new(request).expect("request id"),
-            requested_at: self.clock.now(),
+            requested_at: self.time.now(),
             plan: self.plans[recipe].clone(),
             version: RecipeVersion::new(1),
             version_named: false,
@@ -256,6 +274,53 @@ impl Rig {
                 .map(|l| (l.entry.table, l.entry.row_key, l.entry.op))
                 .collect()
         })
+    }
+}
+
+/// Wall time pinned at `T0` that moves with the real monotonic clock, so a test sees real
+/// durations (the executor measures `COMMIT` with `Clock::monotonic`) while every stamp stays far
+/// from the database's own `now()`.
+#[derive(Debug)]
+struct RealTime(SystemClock);
+
+impl Clock for RealTime {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_unix_millis(T0).saturating_add(self.0.monotonic())
+    }
+
+    fn monotonic(&self) -> Duration {
+        self.0.monotonic()
+    }
+}
+
+/// A small deterministic generator, so a failing round can be replayed from its printed seed.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// Runs `cmd` as a client would: while the answer is `overloaded` (nothing is stored then) it
+/// waits the hinted time and sends the same request id again.
+async fn run_retrying(exec: &Executor, cmd: &Command) -> Result<Finished, Error> {
+    let mut tries = 0;
+    loop {
+        match exec.run(cmd).await {
+            Err(Error::Overloaded { retry_after }) if tries < 60 => {
+                tries += 1;
+                tokio::time::sleep(retry_after).await;
+            }
+            other => return other,
+        }
     }
 }
 
@@ -1149,4 +1214,370 @@ fn the_writer_refuses_to_start_when_synchronous_commit_does_not_match_the_durabi
     rig.sql("ALTER SYSTEM RESET synchronous_commit");
     rig.sql("SELECT pg_reload_conf()");
     wait_for(true);
+}
+
+/// What one task of test 19 sends: a subject and an amount. Payloads 0 to 3 share one request key.
+const PAYLOADS: [(&str, i64); 4] = [("s", 5), ("s", 6), ("t", 5), ("s", 10_000)];
+
+#[test]
+#[ignore = "needs a real PostgreSQL and a non-root user"]
+fn random_interleavings_of_one_key_never_apply_twice_or_give_two_results() {
+    // Test 19. Each round sends one request key from several tasks at random moments, some with
+    // another payload, some dropped in flight and sent again. Whatever the interleaving, one
+    // payload wins, it is applied once, and every other payload is a conflict.
+    const ROUNDS: u64 = 40;
+    let rig = Rig::new(54_429);
+    rig.sql(
+        "INSERT INTO app.users (id, balance, interest, last_claim) \
+         SELECT 's' || g, 1000, 0, 0 FROM generate_series(0, 39) g \
+         UNION ALL SELECT 't' || g, 1000, 0, 0 FROM generate_series(0, 39) g",
+    );
+    let mut entries_expected = 0;
+    // What the rounds covered, printed at the end so a run shows that it was not all easy cases.
+    let (mut conflicts, mut replays, mut seen_by_retry, mut failed_winners) = (0, 0, 0, 0);
+    for round in 0..ROUNDS {
+        let mut rng = Rng::new(round + 1);
+        let key = format!("p{round}");
+        let subject = |tag: &str| format!("{tag}{round}");
+        let tasks = 2 + rng.below(7);
+        let mut plan = Vec::new();
+        for _ in 0..tasks {
+            let p = if rng.below(10) < 6 {
+                0
+            } else {
+                1 + usize::try_from(rng.below(3)).expect("small")
+            };
+            let delay = Duration::from_micros(rng.below(4_000));
+            let dropped_after =
+                (rng.below(4) == 0).then(|| Duration::from_micros(rng.below(12_000)));
+            plan.push((p, delay, dropped_after));
+        }
+        let handles: Vec<_> = plan
+            .iter()
+            .map(|&(p, delay, dropped_after)| {
+                let (tag, amount) = PAYLOADS[p];
+                let cmd = rig.spend(&key, &subject(tag), amount);
+                let exec = rig.exec.clone();
+                let handle = rig.rt.spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    if let Some(after) = dropped_after {
+                        let (e, c) = (exec.clone(), cmd.clone());
+                        let first = tokio::spawn(async move { e.run(&c).await });
+                        tokio::time::sleep(after).await;
+                        first.abort();
+                        let _ = first.await;
+                    }
+                    run_retrying(&exec, &cmd).await
+                });
+                (p, dropped_after.is_some(), handle)
+            })
+            .collect();
+        let replies: Vec<_> = handles
+            .into_iter()
+            .map(|(p, dropped, h)| {
+                let reply = rig
+                    .rt
+                    .block_on(h)
+                    .unwrap_or_else(|e| Err(Error::Internal(e.to_string())));
+                (p, dropped, reply)
+            })
+            .collect();
+        let ctx = format!("round {round}, plan {plan:?}, replies {replies:?}");
+
+        let winners: Vec<usize> = {
+            let mut w: Vec<usize> = replies
+                .iter()
+                .filter(|(_, _, r)| r.is_ok())
+                .map(|(p, _, _)| *p)
+                .collect();
+            w.sort_unstable();
+            w.dedup();
+            w
+        };
+        assert_eq!(winners.len(), 1, "two payloads were applied: {ctx}");
+        let winner = winners[0];
+
+        let mut results = Vec::new();
+        let (mut fresh, mut winner_drops) = (0, 0);
+        for (p, dropped, reply) in &replies {
+            if *p == winner {
+                let f = reply.as_ref().unwrap_or_else(|e| panic!("{e:?}: {ctx}"));
+                results.push((f.outcome.status.clone(), f.outcome.result.clone()));
+                fresh += usize::from(!f.outcome.replayed);
+                winner_drops += usize::from(*dropped);
+            } else {
+                assert_eq!(
+                    reply.as_ref().err(),
+                    Some(&Error::RequestIdConflict),
+                    "{ctx}"
+                );
+            }
+        }
+        results.dedup();
+        assert_eq!(results.len(), 1, "two different results: {ctx}");
+        assert!(fresh <= 1, "applied twice: {ctx}");
+        if winner_drops == 0 {
+            assert_eq!(fresh, 1, "nobody applied it: {ctx}");
+        }
+        conflicts += replies
+            .iter()
+            .filter(|(p, _, r)| *p != winner && r.is_err())
+            .count();
+        replays += replies.len() - 1 - replies.iter().filter(|(p, _, _)| *p != winner).count();
+        seen_by_retry += usize::from(fresh == 0);
+        failed_winners += usize::from(PAYLOADS[winner].1 > 1_000);
+
+        // The database holds exactly one application of the winning payload.
+        let (tag, amount) = PAYLOADS[winner];
+        let applied = amount <= 1_000;
+        let (won, other) = if tag == "t" { ("t", "s") } else { ("s", "t") };
+        let balance = |t: &str| {
+            rig.count(&format!(
+                "SELECT balance FROM app.users WHERE id = '{}'",
+                subject(t)
+            ))
+        };
+        let entries = |t: &str| {
+            rig.count(&format!(
+                "SELECT count(*) FROM app.entries WHERE owner_id = '{}'",
+                subject(t)
+            ))
+        };
+        assert_eq!(
+            balance(won),
+            if applied { 1_000 - amount } else { 1_000 },
+            "{ctx}"
+        );
+        assert_eq!(entries(won), i64::from(applied), "{ctx}");
+        assert_eq!((balance(other), entries(other)), (1_000, 0), "{ctx}");
+        entries_expected += if applied { 2 } else { 0 };
+        assert_eq!(
+            rig.count("SELECT count(*) FROM bhdata_internal.requests"),
+            i64::try_from(round + 1).expect("small"),
+            "{ctx}"
+        );
+        assert_eq!(
+            rig.count("SELECT count(*) FROM bhdata_internal.requests WHERE status = 'running'"),
+            0,
+            "{ctx}"
+        );
+        assert_eq!(rig.changes().len(), entries_expected, "{ctx}");
+    }
+    println!(
+        "{ROUNDS} rounds: {conflicts} conflicts, {replays} replays, {seen_by_retry} rounds where \
+         only a retry saw the result of a dropped task, {failed_winners} rounds won by a failing check"
+    );
+    assert!(conflicts > 0, "no round ever had two payloads");
+}
+
+/// Sends `cmds` through the queue. With `retry` each is sent again, after the hint, while the answer
+/// is `overloaded`; without it each gets one attempt. At most `inflight` are in the queue's hands at
+/// once, so a run that must not be refused stays under the queue's capacity.
+async fn through_queue(
+    queue: &WriteQueue<Executor>,
+    cmds: Vec<Command>,
+    inflight: usize,
+    retry: bool,
+) -> Vec<Result<Outcome, Error>> {
+    let gate = Arc::new(tokio::sync::Semaphore::new(inflight));
+    let handles: Vec<_> = cmds
+        .into_iter()
+        .map(|cmd| {
+            let (queue, gate) = (queue.clone(), gate.clone());
+            tokio::spawn(async move {
+                let _slot = gate.acquire_owned().await.expect("open");
+                let mut tries = 0;
+                loop {
+                    match queue.execute(cmd.clone()).await {
+                        Err(Error::Overloaded { retry_after }) if retry && tries < 200 => {
+                            tries += 1;
+                            tokio::time::sleep(retry_after).await;
+                        }
+                        other => return other,
+                    }
+                }
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for h in handles {
+        out.push(
+            h.await
+                .unwrap_or_else(|e| Err(Error::Internal(e.to_string()))),
+        );
+    }
+    out
+}
+
+#[test]
+#[ignore = "needs a real PostgreSQL and a non-root user"]
+fn a_slow_commit_raises_the_alarm_and_clears_it_and_throughput_returns() {
+    // Test 15, the real-database half (the alarm and the admission rule are covered on a fake
+    // clock in `queue.rs`). The stand-in for a slow disk is a deferred trigger that sleeps inside
+    // `COMMIT`; the delay is read from a table, so the test switches it on and off.
+    const USERS: usize = 600;
+    const BULK: usize = 1_200;
+    let time: Arc<dyn Clock> = Arc::new(RealTime(SystemClock::new()));
+    let rig = Rig::with_clock(54_430, time.clone());
+    rig.sql(&format!(
+        "INSERT INTO app.users (id, balance, interest, last_claim) \
+         SELECT 'w' || g, 1000000, 0, 0 FROM generate_series(0, {}) g",
+        USERS - 1
+    ));
+    rig.sql(
+        "CREATE TABLE public.bhdt_delay (ms integer NOT NULL); \
+         INSERT INTO public.bhdt_delay VALUES (0); \
+         CREATE FUNCTION public.bhdt_slow() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER \
+         SET search_path = public, pg_catalog AS $$ \
+         DECLARE d integer; \
+         BEGIN \
+           SELECT ms INTO d FROM public.bhdt_delay; \
+           IF d > 0 THEN PERFORM pg_sleep(d / 1000.0); END IF; \
+           RETURN NULL; \
+         END $$; \
+         CREATE CONSTRAINT TRIGGER bhdt_slow AFTER INSERT ON bhdata_internal.requests \
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.bhdt_slow()",
+    );
+    let set_delay = |ms: u32| rig.sql(&format!("UPDATE public.bhdt_delay SET ms = {ms}"));
+
+    let cfg = Config::default();
+    let executor = Executor::new(
+        rig.pools.clone(),
+        time.clone(),
+        ExecConfig::from_config(&cfg),
+    );
+    let queue = rig
+        .rt
+        .block_on(async { WriteQueue::start(executor, time.clone(), &cfg.writer, 16) });
+    let ids = |prefix: &str, n: usize| -> Vec<Command> {
+        (0..n)
+            .map(|i| rig.spend(&format!("{prefix}{i}"), &format!("w{}", i % USERS), 1))
+            .collect()
+    };
+    let throughput = |done: usize, took: Duration| done as f64 / took.as_secs_f64();
+    let all_done = |replies: &[Result<Outcome, Error>]| {
+        replies
+            .iter()
+            .all(|r| r.as_ref().is_ok_and(|o| o.status == Status::Done))
+    };
+    let mut distinct = 0;
+
+    // 1. The baseline: no delay, no alarm.
+    let started = Instant::now();
+    let replies = rig
+        .rt
+        .block_on(through_queue(&queue, ids("a", BULK), 128, true));
+    let fast_before = throughput(BULK, started.elapsed());
+    assert!(all_done(&replies), "baseline: {replies:?}");
+    distinct += BULK;
+    let status = queue.status();
+    println!("baseline: {fast_before:.0} commands/s, {status:?}");
+    assert!(!status.alarm, "the alarm is on without a delay: {status:?}");
+
+    // 2. A slow commit: a first wave raises the alarm, a flood is then refused by admission.
+    set_delay(400);
+    let wave = rig
+        .rt
+        .block_on(through_queue(&queue, ids("b", 32), 32, true));
+    assert!(all_done(&wave), "first wave: {wave:?}");
+    distinct += 32;
+    let status = queue.status();
+    println!("slow: {status:?}");
+    assert!(
+        status.alarm,
+        "400 ms commits did not raise the alarm: {status:?}"
+    );
+
+    let flood = ids("d", 200);
+    let started = Instant::now();
+    let replies = rig
+        .rt
+        .block_on(through_queue(&queue, flood.clone(), flood.len(), false));
+    let slow_for = started.elapsed();
+    let done_count = replies
+        .iter()
+        .filter(|r| r.as_ref().is_ok_and(|o| o.status == Status::Done))
+        .count();
+    let refused: Vec<usize> = replies
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| match r {
+            Err(Error::Overloaded { retry_after })
+                if *retry_after >= Duration::from_millis(250) =>
+            {
+                Some(i)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_count + refused.len(),
+        flood.len(),
+        "every reply is an answer or `overloaded`: {replies:?}"
+    );
+    assert!(!refused.is_empty(), "the flood was never refused");
+    let fast_slow = throughput(done_count, slow_for);
+    println!(
+        "slow flood: {done_count} done, {} refused, {fast_slow:.0} commands/s",
+        refused.len()
+    );
+    assert!(
+        fast_slow < fast_before / 2.0,
+        "throughput did not drop: {fast_slow:.0} against {fast_before:.0}"
+    );
+    distinct += done_count;
+
+    // 3. The delay is removed: a light trickle of fast commands, and the alarm clears once the slow
+    // ones are out of the 10-second window.
+    set_delay(0);
+    let started = Instant::now();
+    let mut trickle = 0;
+    while queue.status().alarm {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the alarm never cleared: {:?}",
+            queue.status()
+        );
+        let one = ids(&format!("t{trickle}x"), 1);
+        let replies = rig.rt.block_on(through_queue(&queue, one, 1, true));
+        assert!(all_done(&replies), "trickle: {replies:?}");
+        trickle += 1;
+        distinct += 1;
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    println!("the alarm cleared after {:?}", started.elapsed());
+
+    // 4. Throughput is back, and what was refused goes through on a retry with the same ids.
+    let started = Instant::now();
+    let replies = rig
+        .rt
+        .block_on(through_queue(&queue, ids("c", BULK), 128, true));
+    let fast_after = throughput(BULK, started.elapsed());
+    assert!(all_done(&replies), "after: {replies:?}");
+    distinct += BULK;
+    println!("after: {fast_after:.0} commands/s");
+    assert!(
+        fast_after > fast_before / 2.0,
+        "throughput did not return: {fast_after:.0} against {fast_before:.0}"
+    );
+    let again: Vec<Command> = refused.iter().map(|&i| flood[i].clone()).collect();
+    distinct += again.len();
+    let replies = rig.rt.block_on(through_queue(&queue, again, 128, true));
+    assert!(all_done(&replies), "retry of the refused: {replies:?}");
+
+    // Every command was applied once, and the refused ones left nothing behind until retried.
+    let distinct = i64::try_from(distinct).expect("small");
+    assert_eq!(
+        rig.count("SELECT count(*) FROM bhdata_internal.requests"),
+        distinct
+    );
+    assert_eq!(
+        rig.count("SELECT count(*) FROM bhdata_internal.requests WHERE status <> 'done'"),
+        0
+    );
+    assert_eq!(
+        rig.count("SELECT sum(1000000 - balance) FROM app.users"),
+        distinct
+    );
+    assert_eq!(rig.count("SELECT count(*) FROM app.entries"), distinct);
 }

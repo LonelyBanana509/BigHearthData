@@ -2,7 +2,7 @@
 
 Spec v0.2 · 2026-11-23 · Slices A and B are built; every decision below stays changeable (section 12). Covers milestone M4 of `docs/project-structure-plan.md` (crates `bhdata-writer` and `bhdata-changelog`, plus small additions to `bhdata-recipe`, `bhdata-api`, `bhdata-pg` and `bhdata-types`). Section numbers marked "design" refer to `bighearthdata-design-v1.0.md`. Builds on `pg-access.md` (the request table, the change log and the three narrow functions) and `recipe-compiler.md` (the plan the writer runs).
 
-**Status (2026-11-23): slices A and B are built; slice C is built except test 19 and the clean-VM run.** Your "for now" was taken as a yes to all eight defaults in section 12, so everything stays changeable. Slice A is the evaluator (`bhdata-recipe/src/eval.rs`), the `[writer]` config section, `Command`/`Outcome`/`ShardBackend::execute` and the payload hash (`bhdata-api/src/shard.rs`), the time rule, retry policy, admission with the commit-latency watch and the result encoding (`bhdata-writer`), and the entry format, the `(xid, seq)` position and a pure model of the horizon read (`bhdata-changelog`). Where the code settled something the text left open:
+**Status (2026-11-23): slices A, B and C are built, and the whole write-path suite (tests 1 to 19) has run against a real PostgreSQL 17. What is left is the clean-VM run.** Your "for now" was taken as a yes to all eight defaults in section 12, so everything stays changeable. Slice A is the evaluator (`bhdata-recipe/src/eval.rs`), the `[writer]` config section, `Command`/`Outcome`/`ShardBackend::execute` and the payload hash (`bhdata-api/src/shard.rs`), the time rule, retry policy, admission with the commit-latency watch and the result encoding (`bhdata-writer`), and the entry format, the `(xid, seq)` position and a pure model of the horizon read (`bhdata-changelog`). Where the code settled something the text left open:
 
 - **`and` / `or` stop at the left side** when it decides the answer, so `b != 0 and ...` works as a guard. The compiler still type-checks both sides. This is a rule of the expression language and belongs in `recipe-format.md` section 2 when you confirm it.
 - **Times are `Timestamp` (milliseconds)**, as in `bhdata-types`; an evaluated `now` and a stored timestamp value are whole microseconds.
@@ -21,7 +21,7 @@ Spec v0.2 · 2026-11-23 · Slices A and B are built; every decision below stays 
 - **A `list` in a result** is a JSON array of objects, in row order.
 - **`overloaded` under contention is real.** Thirty commands on one row with sixteen connections can pass the role's 2 s `lock_timeout` on a busy machine; nothing is stored and a retry with the same id succeeds. That is the pressure the slice C queue is for, and the tests that start many commands at once retry like a client.
 
-**Slice C (built, except test 19 and the clean-VM run).** What the code settled:
+**Slice C (built; only the clean-VM run is left).** What the code settled:
 
 - **`bhdata-writer/src/queue.rs`**: the bounded FIFO queue with one writer task per recipe connection, generic over a `CommandRunner` (the `Executor` is the real one) and implementing `ShardBackend`. It refuses before queueing by the admission rule, drops a command that waited four times the limit, feeds each commit time to the latency watch, skips a command whose caller has gone away (nothing was stored; a retry settles it by id), and `shutdown(drain)` refuses the waiting and the new, then waits up to `drain` for the running. `QueueStatus` is its snapshot.
 - **`bhdata-writer/src/compaction.rs`**: the per-shard timer job (`run_round`, `CompactionJob`): compacts in batches, then purges history, through the admin functions.
@@ -29,7 +29,7 @@ Spec v0.2 · 2026-11-23 · Slices A and B are built; every decision below stays 
 - **Host wiring is in `bhdata-server`, not `bhdata-engine`.** `bhdata-writer` already depends on the engine for its tests, so an engine to writer edge would be a cycle. Instead `host::run_with` / `server_main_with` take a hook that runs after the bootstrap and the login check and returns whatever must stay alive; `bhdata-server/src/write_path.rs` is that hook (pools, the `synchronous_commit` check, the queue, the compaction job, on a two-thread runtime of its own). A refused check stops the start.
 - **`bhdatactl status` does not show the queue yet.** `status` runs in another process and cannot read the server's in-memory queue; that needs a status channel, which arrives with M8. `QueueStatus` is ready for it.
 - **`bhdatactl call` reads files, not the registry** (decided with you; the planner of M5 will own plan loading): `bhdatactl call <recipe file> --schema <schema file> --subject <id> [--counterparty <id>] [--arg name=value]... [--request-id <id>] [--config <absolute path>]`. The schema must already be applied and the recipe registered, because that gives the recipe role its rights. It runs one command through the `Executor` in its own process (so, not through the server's queue), as the service user, and prints one line of JSON.
-- **Tests.** The queue on a fake runner and a manual clock covers test 14 and the alarm part of test 15; test 16 is `the_writer_refuses_to_start_when_synchronous_commit_does_not_match_the_durability` in `write_path.rs` (`--ignored`, never run in the sandbox: no PostgreSQL). The real-database part of the commit-latency test (15) and test 19 (the property test) are not written yet.
+- **Tests.** The queue on a fake runner and a manual clock covers test 14 and the alarm part of test 15. On a real server: test 16 is `the_writer_refuses_to_start_when_synchronous_commit_does_not_match_the_durability`; test 19 is `random_interleavings_of_one_key_never_apply_twice_or_give_two_results` (40 seeded rounds of 2 to 8 tasks with four payloads, some tasks dropped in flight and sent again; it prints how many conflicts, replays and dropped-then-replayed rounds it covered); test 15's real-database half is `a_slow_commit_raises_the_alarm_and_clears_it_and_throughput_returns`. The slow disk is a deferred constraint trigger on `requests` that sleeps inside `COMMIT`, with its delay in a table the test updates. The executor measures `COMMIT` with `Clock::monotonic`, so these tests use a `RealTime` clock (wall time pinned at the test epoch, monotonic time real); with the manual clock every commit would measure 0 ms. The numbers it prints are a sandbox's, not a measurement: the real ones wait for M11.
 
 Plan acceptance for M4: **the write-path suite passes** (section 10). The plan calls this the most heavily tested part of the project, and says to finish and harden it before M5.
 
@@ -54,7 +54,7 @@ The exact order of everything that happens between "a command is admitted" and "
 9. **Bounded automatic retry** of deadlocks and serialization failures: 3 attempts in all, with a short jittered pause (section 5).
 10. **Admission control rejects on the age of the oldest queued command, not only on a full queue** (section 7). A rejected command has done no database work, so it has no record.
 11. **Compaction moves a request record into a history row in one statement**, so there is never a moment when neither exists (section 8). The recipe role cannot delete anything; compaction runs as `bhdata_admin` through a narrow function.
-12. **Import and batch runs use the same entry point** with derived request ids and permanent records (section 9). The batch-run feature itself still needs its own spec before M4 is final (plan open item 4); this spec only provides what it will need.
+12. **Import and batch runs use the same entry point** with derived request ids and permanent records (section 9). The batch-run feature has its own spec, `batch-runs.md`; this spec only provides what it needs.
 13. **`deadlock_timeout` is set to 100 ms for `bhdata_recipe`** (PostgreSQL's default is 1 s, longer than the role's 2 s `lock_timeout` allows for a retry).
 14. **The writer refuses to start if the server's `synchronous_commit` does not match the configured durability** (`on` for full, as `bhdata-engine` writes it). A reply after a commit that was not synced would break "full durability by default".
 15. **A local dev command, `bhdatactl call`,** runs one recipe as the local admin (section 11). It makes the clean-VM run and the by-hand checks possible before the gateway exists (M5). It is not a client interface.
@@ -205,7 +205,7 @@ The writer has one entry point, `ShardBackend::execute(Command)`. Three other fe
 |---|---|---|---|
 | Client (gateway, M5) | the client's id | Window | the normal case |
 | Import (M10) | `import:<file hash, 64 hex>:<row number>` | Permanent | the length fits `MAX_ID_LEN` (128). A rerun of a finished row returns its stored result, which makes a stopped import resumable |
-| Batch run (a later spec) | `batch:<batch id>:<subject id>` | Permanent | one command per subject, one shard each |
+| Batch run (`batch-runs.md`) | login `batch:<batch id>`, request id `batch:<batch id>:<sha256 of the subject id, 64 hex>` | Permanent | one command per subject, one shard each. The hash replaces the subject id itself: a subject id may be 128 characters and contain `:`, so the plain form could exceed `MAX_ID_LEN` and be ambiguous |
 | Saga step (M15) | `<transaction id>:<step number>` | Window, or longer by the transaction's own record | the per-shard step list runs through the same transaction layout |
 
 `retention` can be set only by code that builds a `Command` directly (import, batch, saga). The gateway builds commands from client input and never sets it. Rows written for a `Permanent` command are the cost of "request ids for finished rows do not expire"; one small record per imported row, noted for M10.
@@ -265,7 +265,7 @@ Real-PostgreSQL tests are `--ignored` and live in `crates/bhdata-writer/tests/` 
 | Migration 3, `exec.rs`, tests 1 to 3, 5 to 13, 17, 18, 19 | Yes (`--ignored`, a private instance) | Yes |
 | Kill PostgreSQL during and after commit (test 4) | Yes (`pg_ctl -m immediate`) | Yes |
 | Commit-latency test (15) | Rough (a throttled stand-in) | Native Linux for real numbers (M11) |
-| PostgreSQL 17 | No | The clean-VM run |
+| PostgreSQL 17 | The suite, on a conda-forge build run by a non-root user (`claude/pg-tests.sh`) | The clean-VM run: the distro packages, the installer and reboot recovery |
 | Reboot recovery of the service | No (no systemd) | The clean-VM run |
 
 ## 14. Left out of M4

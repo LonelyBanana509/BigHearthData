@@ -356,7 +356,7 @@ Each milestone is several small slices. Each ends green and zip-able.
 
 **M2 slices.** M2 is three slices, like M1: **A** pure parts of `bhdata-pg` (error mapping, connection budget, SQL text), **B** pools, bootstrap and the engine's login settings, **C** wiring into the host and the clean-VM run. The spec is `docs/specs/pg-access.md`. Slice A is done: `errors`, `conn_budget`, `roles` and `internal` in `bhdata-pg`, and `[pools]` in `bhdata-types`; the SQL was run once against PostgreSQL 16. Slice B is done: the driver crates (`tokio`, `tokio-postgres`, `deadpool-postgres`), `pool` and `bootstrap` in `bhdata-pg`, the engine's `pg_hba`/`pg_ident` and reserved-connections settings, and `crates/bhdata-engine/tests/pg_access.rs` (four ignored tests, run on PostgreSQL 16). Slice C is built: `host::run` checks the budget, runs the bootstrap and proves every pool role can log in; a running server is reloaded for the new login rules; `bhdatactl status` shows the schema version and the pool budget. What is left is the clean-VM run on PostgreSQL 17, including an in-place upgrade of an M1 install.
 
-**M4 slices.** M4 is three slices, like M1 to M3. The spec is `docs/specs/write-path.md`. **A** (pure parts) and **B** (migration 3, `exec.rs`, change-log reader and trim, `history.rs`, tests 1 to 13, 17 and 18 on PostgreSQL 16) are done. **C** (queue wired to real connections, the compaction job, the host, `bhdatactl call`, tests 14 to 16 and 19, then the clean-VM run on PostgreSQL 17) is left.
+**M4 slices.** M4 is three slices, like M1 to M3. The spec is `docs/specs/write-path.md`. **A** (pure parts) and **B** (migration 3, `exec.rs`, change-log reader and trim, `history.rs`, tests 1 to 13, 17 and 18 on PostgreSQL 16) are done. **C** (queue wired to real connections, the compaction job, the host, `bhdatactl call`, tests 14 to 16 and 19) is done, and the suite has run on PostgreSQL 17. The clean-VM run is left.
 
 **Thin slice first.** M0 to M4 need no network: the write-path suite runs in-process against a real private PostgreSQL, with recipes loaded from files. Finish and harden M4 before starting M5, because it is the riskiest part and everything else sits on it.
 
@@ -411,7 +411,7 @@ M12 may be built before M13 to M16. The order from M13 on follows the scaling st
 Short documents in `docs/specs/`, each a page or two, written before the milestone starts:
 
 1. `recipe-format.md` and `recipe-compiler.md` (before M3)
-2. `write-path.md`: exact transaction layout of one command (before M4)
+2. `write-path.md`: exact transaction layout of one command (before M4), and `batch-runs.md` (written; the action is built in M10)
 3. `wire-protocol.md` (before M5)
 4. `change-log-and-rebuild.md` (before M7)
 5. `backup-and-restore.md` (before M9)
@@ -424,5 +424,5 @@ Short documents in `docs/specs/`, each a page or two, written before the milesto
 1. Where derived stores live at stage 0 (PostgreSQL tables or in memory behind the trait). The plan assumes either works; M7 picks one.
 2. Admin UI: the plan only has the CLI (`bhdatactl`). A web UI is a later, separate crate.
 3. Whether to add an application namespace to generated ids if multi-tenant use is ever wanted. For now the login is the namespace.
-4. Batch runs: an admin action that runs one named recipe once per subject (for example interest for every user), reusing the import machinery. Needs its own spec before M4 is final (see `recipe-compiler.md`, section 1).
+4. Batch runs: an admin action that runs one named recipe once per subject (for example interest for every user), reusing the import machinery. Specified in `batch-runs.md` (written 2026-11-23, built with import in M10).
 5. M3 slice A is done (`bhdata-schema`: model, parse, validate, DDL, diff; pure, 17 tests, DDL run on PostgreSQL 16). Slice B is split: **B1** is done (`bhdata-recipe`: rejection codes, expression language, recipe model and parser, `Limits`; pure, 21 tests; `bhdata-schema` now shares its type and bound parsing and its decimal helpers), **B2** is done (compiler checks, lanes, plan, canonical form and hash, five frozen starter recipes), and so is slice C (`bhdata-control`: registry, migration 2, grants; `bhdatactl schema apply`, `recipe register`, `recipe list`; real-server test on PostgreSQL 16). Left for M3's close: the run on PostgreSQL 17. See `recipe-compiler.md`, sections 10 and 11.
