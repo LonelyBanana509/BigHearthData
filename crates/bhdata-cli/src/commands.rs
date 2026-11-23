@@ -5,6 +5,7 @@
 //! bhdatactl schema apply <file>            [--config <absolute path>]
 //! bhdatactl recipe register <file>         [--config <absolute path>]
 //! bhdatactl recipe list                    [--config <absolute path>]
+//! bhdatactl call <recipe file> --schema <file> --subject <id> [options]   (see `call.rs`)
 //! ```
 //!
 //! `status` is the engine's. The others run as the local admin only (permission checks arrive with
@@ -24,7 +25,9 @@ use bhdata_recipe::Limits;
 const USAGE: &str = "usage: bhdatactl status [--config <absolute path>]\n\
        bhdatactl schema apply <file> [--config <absolute path>]\n\
        bhdatactl recipe register <file> [--config <absolute path>]\n\
-       bhdatactl recipe list [--config <absolute path>]";
+       bhdatactl recipe list [--config <absolute path>]\n\
+       bhdatactl call <recipe file> --schema <schema file> --subject <id> [--counterparty <id>]\n\
+                      [--arg name=value]... [--request-id <id>] [--config <absolute path>]";
 
 /// A command line, understood.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub enum Command {
         /// What follows.
         rest: Vec<OsString>,
     },
+    /// `call <recipe file> ...`.
+    Call(crate::call::CallArgs),
 }
 
 /// Reads the command line (without the program name).
@@ -79,6 +84,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, String> {
         (Some("recipe"), Some("list")) => Ok(Command::RecipeList {
             rest: args[2..].to_vec(),
         }),
+        (Some("call"), _) => Ok(Command::Call(crate::call::parse(&args[1..])?)),
         (None, _) => Err("no command given".to_string()),
         _ => Err("unknown command".to_string()),
     }
@@ -166,6 +172,7 @@ fn run(command: &Command) -> Result<Vec<String>, String> {
             let rows = blocking::list(&s.target).map_err(|e| e.to_string())?;
             Ok(render_list(&rows))
         }
+        Command::Call(call) => crate::call::run(call),
     }
 }
 

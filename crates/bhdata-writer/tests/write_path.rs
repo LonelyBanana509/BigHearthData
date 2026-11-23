@@ -19,7 +19,8 @@ use bhdata_api::recipe::{compile, parse_recipe, Limits, Plan};
 use bhdata_api::shard::{Command, Retention, Status};
 use bhdata_api::types::config::PoolConfig;
 use bhdata_api::types::{
-    Clock, Config, Error, LoginId, ManualClock, RecipeVersion, RequestId, SubjectId, Timestamp,
+    Clock, Config, Durability, Error, LoginId, ManualClock, RecipeVersion, RequestId, SubjectId,
+    Timestamp,
 };
 use bhdata_changelog::{read_after, Op, Position};
 use bhdata_engine::instance::{self, InstanceSpec};
@@ -31,6 +32,7 @@ use bhdata_schema::ddl::create_schema;
 use bhdata_schema::parse_schema;
 use bhdata_writer::exec::{ExecConfig, Executor, Finished};
 use bhdata_writer::history;
+use bhdata_writer::startup::verify_synchronous_commit;
 use bhdata_writer::time_rule::compaction_cutoff;
 
 const HOUR: Duration = Duration::from_secs(3_600);
@@ -1114,4 +1116,37 @@ fn decimals_and_timestamps_travel_exactly() {
         rig.count("SELECT (extract(epoch FROM at) * 1000000)::bigint FROM app.entries"),
         i64::try_from(T0).unwrap() * 1_000
     );
+}
+
+#[test]
+#[ignore = "needs a real PostgreSQL and a non-root user"]
+fn the_writer_refuses_to_start_when_synchronous_commit_does_not_match_the_durability() {
+    // Test 16. The rig runs with full durability, so the server starts with `synchronous_commit = on`.
+    let rig = Rig::new(54_428);
+    let verdict = || {
+        rig.rt
+            .block_on(verify_synchronous_commit(&rig.pools, Durability::Full))
+    };
+    // A reload reaches an idle pooled connection at its next command; give it a moment.
+    let wait_for = |want_ok: bool| {
+        for _ in 0..50 {
+            if verdict().is_ok() == want_ok {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the verdict never became ok = {want_ok}: {:?}", verdict());
+    };
+    wait_for(true);
+    rig.sql("ALTER SYSTEM SET synchronous_commit = 'off'");
+    rig.sql("SELECT pg_reload_conf()");
+    wait_for(false);
+    let refused = verdict().expect_err("a mismatch is refused");
+    assert!(
+        refused.contains("synchronous_commit = off") && refused.contains("will not start"),
+        "{refused}"
+    );
+    rig.sql("ALTER SYSTEM RESET synchronous_commit");
+    rig.sql("SELECT pg_reload_conf()");
+    wait_for(true);
 }

@@ -20,3 +20,8 @@ bhdata-control = { workspace = true }
 bhdata-recipe = { workspace = true }
 bhdata-engine = { workspace = true }
 bhdata-backup = { workspace = true }
+bhdata-api = { workspace = true }
+bhdata-pg = { workspace = true }
+bhdata-schema = { workspace = true }
+bhdata-writer = { workspace = true }
+tokio = { workspace = true }

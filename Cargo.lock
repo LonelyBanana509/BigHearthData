@@ -64,11 +64,16 @@ dependencies = [
 name = "bhdata-cli"
 version = "0.0.0"
 dependencies = [
+ "bhdata-api",
  "bhdata-backup",
  "bhdata-client",
  "bhdata-control",
  "bhdata-engine",
+ "bhdata-pg",
  "bhdata-recipe",
+ "bhdata-schema",
+ "bhdata-writer",
+ "tokio",
 ]
 
 [[package]]
@@ -210,6 +215,7 @@ dependencies = [
  "bhdata-recipe",
  "bhdata-schema",
  "bhdata-writer",
+ "tokio",
 ]
 
 [[package]]

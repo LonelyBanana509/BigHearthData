@@ -113,6 +113,20 @@ fn describe(status: &Status) -> String {
 /// Creates (once) and starts the instance, then watches it and applies updates, for as long as the
 /// process lives. Only returns on an error that stops it from starting.
 pub fn run(config: &Config) -> Result<Infallible, EngineError> {
+    run_with(config, |_, _| Ok(Box::new(())))
+}
+
+/// What a hook returns: whatever must stay alive for as long as the process runs (a runtime, the
+/// writer), kept by [`run_with`] until the process ends.
+pub type Running = Box<dyn std::any::Any>;
+
+/// Like [`run`], and after the bootstrap and the login check it calls `after_bootstrap` with the
+/// config and the instance's target. `bhdata-server` uses it to start the writer without this
+/// crate depending on it. An `Err` from the hook stops the start.
+pub fn run_with<F>(config: &Config, after_bootstrap: F) -> Result<Infallible, EngineError>
+where
+    F: FnOnce(&Config, &Target) -> Result<Running, String>,
+{
     let spec = spec_from(config, instance::current_user()?)?;
     if !install::is_installed(&spec.pg_bin_dir) {
         return Err(EngineError::invalid(
@@ -160,6 +174,7 @@ pub fn run(config: &Config) -> Result<Infallible, EngineError> {
     });
     bootstrap::verify_logins_blocking(&target, &config.pools).map_err(database)?;
     log("every pool role can log in");
+    let _running = after_bootstrap(config, &target).map_err(EngineError::Database)?;
 
     let supervisor = Supervisor::spawn(Arc::new(PgOps(spec.clone())), SuperviseConfig::default());
     let ops = SystemUpdateOps {
@@ -193,6 +208,14 @@ pub fn run(config: &Config) -> Result<Infallible, EngineError> {
 /// The whole of `bhdata-server` at M1: exit code 2 for a bad command line, 1 for anything that
 /// stops it from starting.
 pub fn server_main(args: &[OsString]) -> ExitCode {
+    server_main_with(args, |_, _| Ok(Box::new(())))
+}
+
+/// [`server_main`] with the hook of [`run_with`].
+pub fn server_main_with<F>(args: &[OsString], after_bootstrap: F) -> ExitCode
+where
+    F: FnOnce(&Config, &Target) -> Result<Running, String>,
+{
     let path = match config_path_from_args(args) {
         Ok(p) => p,
         Err(e) => {
@@ -200,7 +223,7 @@ pub fn server_main(args: &[OsString]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let result = load_config(&path).and_then(|config| run(&config));
+    let result = load_config(&path).and_then(|config| run_with(&config, after_bootstrap));
     match result {
         Ok(never) => match never {},
         Err(e) => {

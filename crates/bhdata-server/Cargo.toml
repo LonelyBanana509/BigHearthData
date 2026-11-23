@@ -26,3 +26,4 @@ bhdata-planner = { workspace = true }
 bhdata-recipe = { workspace = true }
 bhdata-schema = { workspace = true }
 bhdata-writer = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -1,8 +1,9 @@
 //! bhdatactl: install, start, status, register, import, backup, restore, stress.
 //!
-//! At M3: `status`, `schema apply`, `recipe register` and `recipe list` (see [`commands`]); the
-//! rest arrives with milestone M8.
+//! At M4: `status`, `schema apply`, `recipe register`, `recipe list` (see [`commands`]) and the dev
+//! command `call` (see [`call`]); the rest arrives with milestone M8.
 
+mod call;
 mod commands;
 
 use std::ffi::OsString;
