@@ -14,12 +14,16 @@
 //! - [`convert`]: values to and from the database, by the plan's types.
 //! - [`history`]: compaction and the history purge (section 8).
 //!
-//! The queue in front of it, the compaction job and the `ShardBackend` come with slice C.
+//! M4 slice C: [`queue`], the bounded queue and its writer tasks in front of the executor, which
+//! implements `ShardBackend`. [`compaction`], the timer job that moves old request records to the history. The host wiring and
+//! `bhdatactl call` follow.
 
 pub mod admission;
+pub mod compaction;
 pub mod convert;
 pub mod exec;
 pub mod history;
+pub mod queue;
 pub mod result;
 pub mod retry;
 pub mod time_rule;
