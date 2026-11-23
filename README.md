@@ -20,6 +20,8 @@ M3 (recipe compiler and registry) is built in slices A (`bhdata-schema`), B (`bh
 
 M4 (the write path) is done: slice A (the pure parts) and slice B (migration 3, the one-command transaction in `bhdata-writer/src/exec.rs`, the change-log reader and trim, and the real-server write-path suite) are built; slice C (the queue, the compaction job, the host wiring in `bhdata-server` and the dev command `bhdatactl call`) is built, and the write-path suite (tests 1 to 19) has run on PostgreSQL 17. M4 is closed: the clean-VM run is done. The batch-run action has its spec in [docs/specs/batch-runs.md](docs/specs/batch-runs.md) and is built with import in M10. The spec is [docs/specs/write-path.md](docs/specs/write-path.md). The real-server tests need PostgreSQL and a non-root user: `BHDATA_PG_BIN=/usr/lib/postgresql/17/bin cargo test -p bhdata-writer --test write_path -- --ignored`.
 
+M5 (gateway and client) has its spec ([docs/specs/wire-protocol.md](docs/specs/wire-protocol.md), approved) and its shared contracts in place: the `[gateway]` config in `bhdata-types`, the `RequestHandler` and `LoginStore` seams in `bhdata-api`, and one empty file per piece of work. [docs/specs/m5-lanes.md](docs/specs/m5-lanes.md) splits the work into lanes that can be built in parallel. No M5 code is built yet.
+
 ## Building and checking
 
 Needs Rust 1.88 or newer, `python3`, and two cargo tools (one-time: `cargo install --locked cargo-deny cargo-audit`).

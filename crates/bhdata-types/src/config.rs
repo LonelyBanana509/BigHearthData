@@ -12,6 +12,7 @@
 //! Time values are plain numbers with the unit in the name (`ttl_ms`, `retry_window_secs`), which
 //! is how they look in a TOML file. Use the accessor methods to get a [`Duration`].
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -340,6 +341,230 @@ impl WriterConfig {
     }
 }
 
+/// The gateway (wire-protocol spec, sections 2 to 4 and 8). Every default is a placeholder until the
+/// load runs of milestone M11, except the ones the spec fixes (frame and JSON limits, timers, lockout).
+///
+/// There is no auth-off switch: `insecure_local` only allows a plain connection, and only on a
+/// loopback address (checked by [`GatewayConfig::validate`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GatewayConfig {
+    /// Where the gateway listens.
+    pub listen: SocketAddr,
+    /// The certificate chain (PEM). Required unless `insecure_local` is set; read at start-up and on reload.
+    pub cert_path: Option<PathBuf>,
+    /// The private key (PEM) for the certificate.
+    pub key_path: Option<PathBuf>,
+    /// Allow a plain (non-TLS) connection. Refused on any address that is not loopback.
+    pub insecure_local: bool,
+    /// Largest frame before login, in bytes.
+    pub max_frame_before_login: u32,
+    /// Largest frame after login, in bytes.
+    pub max_frame: u32,
+    /// Deepest JSON nesting, before and after login.
+    pub max_json_depth: u32,
+    /// Most keys in one JSON object before login.
+    pub max_keys_before_login: u32,
+    /// Most keys in one JSON object after login.
+    pub max_keys: u32,
+    /// Longest single string before login, in bytes.
+    pub max_string_before_login: u32,
+    /// Longest single string after login, in bytes.
+    pub max_string: u32,
+    /// Requests one connection may have open.
+    pub max_inflight_per_connection: u32,
+    /// Requests the whole gateway may have open before it sheds with `overloaded`.
+    pub max_inflight_total: u32,
+    /// The handshake and login must finish within this long.
+    pub handshake_timeout_secs: u64,
+    /// A logged-in connection with no frame in either direction for this long is closed.
+    pub idle_timeout_secs: u64,
+    /// A reply that cannot be written within this long closes the connection.
+    pub write_timeout_secs: u64,
+    /// Login attempts allowed on one connection.
+    pub max_login_attempts_per_connection: u32,
+    /// Consecutive failed logins for one name that lock it.
+    pub lockout_failures: u32,
+    /// How long a locked name stays locked.
+    pub lockout_secs: u64,
+    /// Failed logins from one source address, in a minute, that close further attempts from it.
+    pub source_failures_per_minute: u32,
+    /// How long that source is closed out.
+    pub source_block_secs: u64,
+    /// PBKDF2 iterations for a new password verifier.
+    pub scram_iterations: u32,
+    /// Default requests per second per login (a token bucket); a login record may override it.
+    pub rate_per_sec: u32,
+    /// Default burst of that bucket.
+    pub rate_burst: u32,
+    /// Most connections one login may hold.
+    pub max_connections_per_login: u32,
+    /// How long a shutdown waits for open requests.
+    pub drain_ms: u64,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        GatewayConfig {
+            listen: SocketAddr::from(([127, 0, 0, 1], 7_620)),
+            cert_path: None,
+            key_path: None,
+            insecure_local: false,
+            max_frame_before_login: 16 * 1_024,
+            max_frame: 1_024 * 1_024,
+            max_json_depth: 8,
+            max_keys_before_login: 64,
+            max_keys: 256,
+            max_string_before_login: 4 * 1_024,
+            max_string: 64 * 1_024,
+            max_inflight_per_connection: 32,
+            max_inflight_total: 1_024,
+            handshake_timeout_secs: 10,
+            idle_timeout_secs: 60,
+            write_timeout_secs: 10,
+            max_login_attempts_per_connection: 3,
+            lockout_failures: 5,
+            lockout_secs: 900,
+            source_failures_per_minute: 20,
+            source_block_secs: 60,
+            scram_iterations: 100_000,
+            rate_per_sec: 200,
+            rate_burst: 400,
+            max_connections_per_login: 32,
+            drain_ms: 5_000,
+        }
+    }
+}
+
+impl GatewayConfig {
+    /// `true` unless `insecure_local` is set: TLS 1.3 is the only transport otherwise.
+    #[must_use]
+    pub fn tls_required(&self) -> bool {
+        !self.insecure_local
+    }
+
+    /// The handshake-and-login deadline, as a duration.
+    #[must_use]
+    pub fn handshake_timeout(&self) -> Duration {
+        Duration::from_secs(self.handshake_timeout_secs)
+    }
+
+    /// The idle limit of a logged-in connection, as a duration.
+    #[must_use]
+    pub fn idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.idle_timeout_secs)
+    }
+
+    /// The write deadline, as a duration.
+    #[must_use]
+    pub fn write_timeout(&self) -> Duration {
+        Duration::from_secs(self.write_timeout_secs)
+    }
+
+    /// How long a locked name stays locked, as a duration.
+    #[must_use]
+    pub fn lockout(&self) -> Duration {
+        Duration::from_secs(self.lockout_secs)
+    }
+
+    /// How long a shutdown waits for open requests, as a duration.
+    #[must_use]
+    pub fn drain(&self) -> Duration {
+        Duration::from_millis(self.drain_ms)
+    }
+
+    /// Checks what `serde` cannot: nothing is zero, the after-login limits are not below the
+    /// before-login ones, the burst is not below the rate, and a plain connection is only allowed
+    /// on a loopback address (wire-protocol spec, decision 1 and test W13).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let positive: [(&'static str, u64); 22] = [
+            (
+                "gateway.max_frame_before_login",
+                u64::from(self.max_frame_before_login),
+            ),
+            ("gateway.max_frame", u64::from(self.max_frame)),
+            ("gateway.max_json_depth", u64::from(self.max_json_depth)),
+            (
+                "gateway.max_keys_before_login",
+                u64::from(self.max_keys_before_login),
+            ),
+            ("gateway.max_keys", u64::from(self.max_keys)),
+            (
+                "gateway.max_string_before_login",
+                u64::from(self.max_string_before_login),
+            ),
+            ("gateway.max_string", u64::from(self.max_string)),
+            (
+                "gateway.max_inflight_per_connection",
+                u64::from(self.max_inflight_per_connection),
+            ),
+            (
+                "gateway.max_inflight_total",
+                u64::from(self.max_inflight_total),
+            ),
+            (
+                "gateway.handshake_timeout_secs",
+                self.handshake_timeout_secs,
+            ),
+            ("gateway.idle_timeout_secs", self.idle_timeout_secs),
+            ("gateway.write_timeout_secs", self.write_timeout_secs),
+            (
+                "gateway.max_login_attempts_per_connection",
+                u64::from(self.max_login_attempts_per_connection),
+            ),
+            ("gateway.lockout_failures", u64::from(self.lockout_failures)),
+            ("gateway.lockout_secs", self.lockout_secs),
+            (
+                "gateway.source_failures_per_minute",
+                u64::from(self.source_failures_per_minute),
+            ),
+            ("gateway.source_block_secs", self.source_block_secs),
+            ("gateway.scram_iterations", u64::from(self.scram_iterations)),
+            ("gateway.rate_per_sec", u64::from(self.rate_per_sec)),
+            ("gateway.rate_burst", u64::from(self.rate_burst)),
+            (
+                "gateway.max_connections_per_login",
+                u64::from(self.max_connections_per_login),
+            ),
+            ("gateway.drain_ms", self.drain_ms),
+        ];
+        for (field, value) in positive {
+            if value == 0 {
+                return Err(ConfigError::NotPositive { field });
+            }
+        }
+        let bad = |field, reason| Err(ConfigError::Invalid { field, reason });
+        if self.max_frame < self.max_frame_before_login {
+            return bad(
+                "gateway.max_frame",
+                "must not be below max_frame_before_login",
+            );
+        }
+        if self.max_keys < self.max_keys_before_login {
+            return bad(
+                "gateway.max_keys",
+                "must not be below max_keys_before_login",
+            );
+        }
+        if self.max_string < self.max_string_before_login {
+            return bad(
+                "gateway.max_string",
+                "must not be below max_string_before_login",
+            );
+        }
+        if self.rate_burst < self.rate_per_sec {
+            return bad("gateway.rate_burst", "must not be below rate_per_sec");
+        }
+        if self.insecure_local && !self.listen.ip().is_loopback() {
+            return bad(
+                "gateway.insecure_local",
+                "is only allowed on a loopback listen address",
+            );
+        }
+        Ok(())
+    }
+}
+
 /// The whole config. Every field has a default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -362,6 +587,8 @@ pub struct Config {
     pub recipes: RecipeConfig,
     /// The write path.
     pub writer: WriterConfig,
+    /// The gateway (M5).
+    pub gateway: GatewayConfig,
 }
 
 impl Config {
@@ -428,7 +655,8 @@ impl Config {
                 return Err(ConfigError::NotPositive { field });
             }
         }
-        self.engine.validate()
+        self.engine.validate()?;
+        self.gateway.validate()
     }
 }
 
@@ -691,5 +919,97 @@ mod tests {
             reserved_backup: u32::MAX,
         };
         assert_eq!(p.total(), 5 * u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn gateway_defaults_are_the_ones_in_the_wire_protocol_spec() {
+        let g = GatewayConfig::default();
+        assert_eq!(g.max_frame_before_login, 16 * 1_024);
+        assert_eq!(g.max_frame, 1_024 * 1_024);
+        assert_eq!(
+            (g.max_json_depth, g.max_keys_before_login, g.max_keys),
+            (8, 64, 256)
+        );
+        assert_eq!(
+            (g.max_string_before_login, g.max_string),
+            (4 * 1_024, 64 * 1_024)
+        );
+        assert_eq!(
+            (g.max_inflight_per_connection, g.max_inflight_total),
+            (32, 1_024)
+        );
+        assert_eq!(
+            (
+                g.handshake_timeout_secs,
+                g.idle_timeout_secs,
+                g.write_timeout_secs
+            ),
+            (10, 60, 10)
+        );
+        assert_eq!(g.max_login_attempts_per_connection, 3);
+        assert_eq!((g.lockout_failures, g.lockout_secs), (5, 900));
+        assert_eq!(
+            (g.source_failures_per_minute, g.source_block_secs),
+            (20, 60)
+        );
+        assert_eq!(g.scram_iterations, 100_000);
+        assert_eq!(
+            (g.rate_per_sec, g.rate_burst, g.max_connections_per_login),
+            (200, 400, 32)
+        );
+        assert_eq!(g.drain_ms, 5_000);
+        assert!(g.tls_required());
+        assert!(g.listen.ip().is_loopback());
+        assert_eq!(Config::default().gateway, g);
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn gateway_settings_can_be_partial_but_not_misspelled_or_zero() {
+        let c: Config = toml::from_str("[gateway]\nlockout_failures = 7\n").unwrap();
+        assert_eq!(c.gateway.lockout_failures, 7);
+        assert_eq!(c.gateway.lockout_secs, 900);
+        assert!(toml::from_str::<Config>("[gateway]\nlockout_failure = 7\n").is_err());
+        type Zero = (&'static str, fn(&mut GatewayConfig));
+        let zeros: [Zero; 6] = [
+            ("gateway.max_frame", |g| g.max_frame = 0),
+            ("gateway.max_json_depth", |g| g.max_json_depth = 0),
+            ("gateway.idle_timeout_secs", |g| g.idle_timeout_secs = 0),
+            ("gateway.lockout_failures", |g| g.lockout_failures = 0),
+            ("gateway.rate_per_sec", |g| g.rate_per_sec = 0),
+            ("gateway.drain_ms", |g| g.drain_ms = 0),
+        ];
+        for (field, set) in zeros {
+            let mut c = Config::default();
+            set(&mut c.gateway);
+            assert_eq!(c.validate(), Err(ConfigError::NotPositive { field }));
+        }
+    }
+
+    #[test]
+    fn gateway_limits_after_login_are_not_below_those_before_it() {
+        let mut g = GatewayConfig::default();
+        g.max_frame = g.max_frame_before_login - 1;
+        assert!(g.validate().is_err());
+        let mut g = GatewayConfig::default();
+        g.rate_burst = g.rate_per_sec - 1;
+        assert!(g.validate().is_err());
+    }
+
+    #[test]
+    fn a_plain_gateway_connection_is_only_allowed_on_loopback() {
+        let mut g = GatewayConfig {
+            insecure_local: true,
+            ..GatewayConfig::default()
+        };
+        assert!(g.validate().is_ok());
+        assert!(!g.tls_required());
+        g.listen = "0.0.0.0:7620".parse().unwrap();
+        assert!(g.validate().is_err());
+        g.listen = "[::1]:7620".parse().unwrap();
+        assert!(g.validate().is_ok());
+        g.insecure_local = false;
+        g.listen = "10.0.0.5:7620".parse().unwrap();
+        assert!(g.validate().is_ok());
     }
 }

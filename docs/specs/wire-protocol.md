@@ -140,6 +140,8 @@ Pure tests run on every `cargo test`; the rest use real sockets and a real Postg
 
 ## 10. Build order (three slices, as M1 to M4)
 
+The slices can also be built as parallel lanes: see [m5-lanes.md](m5-lanes.md), which fixes the shared contracts and who owns which files. It moves the SCRAM maths from the gateway to `bhdata-proto::scram` (section 6 above says gateway `auth`; the gateway's `auth` module still runs the server side of the login).
+
 - **A.** `bhdata-proto` (frames, limits, messages, codec, error mapping, argument conversion) and the fuzz targets; SCRAM and the lockout counter as pure code on a fake clock; the rate limiter and the shed rule on a fake clock. No sockets.
 - **B.** `bhdata-gateway` on real sockets with a fake handler: TLS, login, permissions, limits, timers, shutdown; tests W2, W3, W5, W7 to W10, W12, W13.
 - **C.** `bhdata-control` logins and audit, `bhdatactl login`, the server wiring and the thin handler, `bhdata-client`, `clients/python`; tests W1, W4, W6, W11, W14, W15; then the clean-VM run with a client on another machine.

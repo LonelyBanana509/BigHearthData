@@ -7,8 +7,10 @@
 //! * [`error`]: [`ControlError`] and the error a client would see.
 //! * [`blocking`]: the same calls on a private runtime with one admin connection, for `bhdatactl`.
 
+pub mod audit;
 pub mod blocking;
 pub mod error;
+pub mod logins;
 pub mod registry;
 
 pub use bhdata_pg::pool::Target;
