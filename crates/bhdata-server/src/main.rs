@@ -4,6 +4,8 @@
 //! PostgreSQL, and after the bootstrap it starts the write path ([`write_path`]): the write queue
 //! and the compaction job. The gateway and the rest arrive with milestone M5.
 
+mod handler;
+mod secret;
 mod write_path;
 
 use std::ffi::OsString;

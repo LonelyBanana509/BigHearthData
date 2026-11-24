@@ -25,6 +25,7 @@ use bhdata_pg::pool::{describe, pg_error};
 use bhdata_pg::roles::{Role, SCHEMA_APP, SCHEMA_CONTROL};
 use bhdata_recipe::canon::sha256_hex;
 use bhdata_recipe::plan::Grants;
+use bhdata_recipe::Plan;
 use bhdata_recipe::{compile, parse_recipe, Limits};
 use bhdata_schema::ddl::{create_schema, statements_for};
 use bhdata_schema::diff::diff;
@@ -307,6 +308,65 @@ pub async fn latest(c: &impl GenericClient, name: &str) -> Result<StoredRecipe, 
             version: None,
         }),
     }
+}
+
+/// A registered recipe version, rebuilt as the plan the writer runs.
+#[derive(Debug, Clone)]
+pub struct LoadedPlan {
+    /// The version.
+    pub version: u32,
+    /// `active` or `retired`.
+    pub status: String,
+    /// The plan, rebuilt from the stored source and the schema version it was registered against.
+    pub plan: Plan,
+}
+
+/// One version of a recipe (`None`: the newest active one) as a [`Plan`], for the server to run.
+///
+/// The plan is rebuilt from the stored source against the schema version recorded with it, as
+/// [`registered_grants`] does, and refused if it no longer hashes to what was registered.
+///
+/// # Errors
+/// [`ControlError::UnknownRecipe`] when there is no such version, [`ControlError::Inconsistent`]
+/// when the stored data no longer rebuilds to the registered plan.
+pub async fn load_plan(
+    c: &impl GenericClient,
+    name: &str,
+    version: Option<u32>,
+) -> Result<LoadedPlan, ControlError> {
+    let stored = match version {
+        Some(v) => get(c, name, v).await?,
+        None => latest(c, name).await?,
+    };
+    let which = format!("{name}@{}", stored.row.version);
+    let sql = format!("SELECT source FROM {SCHEMA_CONTROL}.schema_versions WHERE number = $1");
+    let sv = i32::try_from(stored.row.schema_version).unwrap_or(i32::MAX);
+    let row = c
+        .query_opt(&sql, &[&sv])
+        .await
+        .map_err(pg("read the schema"))?
+        .ok_or_else(|| {
+            ControlError::Inconsistent(format!(
+                "{which} names schema version {}, which is missing",
+                stored.row.schema_version
+            ))
+        })?;
+    let source: String = row.get(0);
+    let schema = parse_stored_schema(stored.row.schema_version, &source)?;
+    let recipe = parse_recipe(&stored.source, &UNLIMITED)
+        .map_err(|e| ControlError::Inconsistent(format!("{which} no longer parses: {e}")))?;
+    let plan = compile(&schema, &recipe, &[], &UNLIMITED)
+        .map_err(|e| ControlError::Inconsistent(format!("{which} no longer compiles: {e}")))?;
+    if plan.content_hash() != stored.row.content_hash {
+        return Err(ControlError::Inconsistent(format!(
+            "{which}: its source now compiles to a different plan than the one registered"
+        )));
+    }
+    Ok(LoadedPlan {
+        version: stored.row.version,
+        status: stored.row.status,
+        plan,
+    })
 }
 
 // ---- schema apply ----

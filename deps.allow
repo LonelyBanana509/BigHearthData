@@ -20,7 +20,7 @@ bhdata-planner: bhdata-api bhdata-cache
 bhdata-proto: bhdata-types
 bhdata-recipe: bhdata-schema bhdata-types
 bhdata-schema: bhdata-types
-bhdata-server: bhdata-api bhdata-backup bhdata-cache bhdata-changelog bhdata-control bhdata-derived bhdata-engine bhdata-gateway bhdata-import bhdata-kinds bhdata-pg bhdata-planner bhdata-recipe bhdata-schema bhdata-writer
+bhdata-server: bhdata-api bhdata-backup bhdata-cache bhdata-changelog bhdata-client bhdata-control bhdata-derived bhdata-engine bhdata-gateway bhdata-import bhdata-kinds bhdata-pg bhdata-planner bhdata-proto bhdata-recipe bhdata-schema bhdata-writer
 bhdata-shard: bhdata-api
 bhdata-sqlmode: bhdata-api bhdata-changelog bhdata-pg
 bhdata-stress: bhdata-client

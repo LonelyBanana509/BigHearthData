@@ -6,6 +6,7 @@
 //! bhdatactl recipe register <file>         [--config <absolute path>]
 //! bhdatactl recipe list                    [--config <absolute path>]
 //! bhdatactl call <recipe file> --schema <file> --subject <id> [options]   (see `call.rs`)
+//! bhdatactl gateway reload                 (see `gateway.rs`)
 //! ```
 //!
 //! `status` is the engine's. The others run as the local admin only (permission checks arrive with
@@ -28,6 +29,7 @@ const USAGE: &str = "usage: bhdatactl status [--config <absolute path>]\n\
        bhdatactl recipe list [--config <absolute path>]\n\
        bhdatactl login create|set-password|grant|revoke|limit|disable|enable|list|audit ...\n\
                       (see `login.rs`; a password is asked for or read from --password-file)\n\
+       bhdatactl gateway reload\n\
        bhdatactl call <recipe file> --schema <schema file> --subject <id> [--counterparty <id>]\n\
                       [--arg name=value]... [--request-id <id>] [--config <absolute path>]";
 
@@ -59,6 +61,8 @@ pub enum Command {
     Call(crate::call::CallArgs),
     /// `login ...`.
     Login(crate::login::LoginArgs),
+    /// `gateway reload`.
+    Gateway(crate::gateway::GatewayArgs),
 }
 
 /// Reads the command line (without the program name).
@@ -90,6 +94,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, String> {
         }),
         (Some("call"), _) => Ok(Command::Call(crate::call::parse(&args[1..])?)),
         (Some("login"), _) => Ok(Command::Login(crate::login::parse(&args[1..])?)),
+        (Some("gateway"), _) => Ok(Command::Gateway(crate::gateway::parse(&args[1..])?)),
         (None, _) => Err("no command given".to_string()),
         _ => Err("unknown command".to_string()),
     }
@@ -182,6 +187,7 @@ fn run(command: &Command) -> Result<Vec<String>, String> {
         }
         Command::Call(call) => crate::call::run(call),
         Command::Login(login) => crate::login::run(login),
+        Command::Gateway(gateway) => crate::gateway::run(gateway),
     }
 }
 

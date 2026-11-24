@@ -23,7 +23,13 @@ bhdata-import = { workspace = true }
 bhdata-kinds = { workspace = true }
 bhdata-pg = { workspace = true }
 bhdata-planner = { workspace = true }
+bhdata-proto = { workspace = true }
 bhdata-recipe = { workspace = true }
 bhdata-schema = { workspace = true }
 bhdata-writer = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+bhdata-client = { workspace = true }
+rcgen = "0.13"
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

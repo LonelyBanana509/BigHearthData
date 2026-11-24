@@ -5,6 +5,7 @@
 
 mod call;
 mod commands;
+mod gateway;
 mod login;
 
 use std::ffi::OsString;
