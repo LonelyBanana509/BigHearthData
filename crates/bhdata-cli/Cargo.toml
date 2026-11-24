@@ -15,6 +15,7 @@ name = "bhdatactl"
 path = "src/main.rs"
 
 [dependencies]
+rustls-pki-types = { workspace = true }
 bhdata-client = { workspace = true }
 bhdata-control = { workspace = true }
 bhdata-recipe = { workspace = true }

@@ -51,10 +51,15 @@ impl Drop for WritePath {
         // Gateway first (clients are told and open requests finish), then the queue.
         if let Some(gateway) = self.gateway.take() {
             if let Ok(gateway) = Arc::try_unwrap(gateway) {
+                eprintln!(
+                    "bhdata-server: gateway stopping (clients are told, open requests finish)"
+                );
                 self.runtime.block_on(gateway.shutdown());
+                eprintln!("bhdata-server: gateway stopped");
             }
         }
         self.runtime.block_on(self.queue.shutdown(self.drain));
+        eprintln!("bhdata-server: write queue drained");
     }
 }
 

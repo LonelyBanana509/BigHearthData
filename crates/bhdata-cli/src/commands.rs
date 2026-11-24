@@ -6,7 +6,7 @@
 //! bhdatactl recipe register <file>         [--config <absolute path>]
 //! bhdatactl recipe list                    [--config <absolute path>]
 //! bhdatactl call <recipe file> --schema <file> --subject <id> [options]   (see `call.rs`)
-//! bhdatactl gateway reload                 (see `gateway.rs`)
+//! bhdatactl gateway reload|pin             (see `gateway.rs`)
 //! ```
 //!
 //! `status` is the engine's. The others run as the local admin only (permission checks arrive with
@@ -30,6 +30,7 @@ const USAGE: &str = "usage: bhdatactl status [--config <absolute path>]\n\
        bhdatactl login create|set-password|grant|revoke|limit|disable|enable|list|audit ...\n\
                       (see `login.rs`; a password is asked for or read from --password-file)\n\
        bhdatactl gateway reload\n\
+       bhdatactl gateway pin [--config <absolute path>]\n\
        bhdatactl call <recipe file> --schema <schema file> --subject <id> [--counterparty <id>]\n\
                       [--arg name=value]... [--request-id <id>] [--config <absolute path>]";
 

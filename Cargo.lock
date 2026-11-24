@@ -73,6 +73,7 @@ dependencies = [
  "bhdata-recipe",
  "bhdata-schema",
  "bhdata-writer",
+ "rustls-pki-types",
  "tokio",
 ]
 
