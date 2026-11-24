@@ -18,6 +18,12 @@
 //! four functions for the admin role only: `read_changes`, `compact_requests`, `purge_history` and
 //! `trim_change_log`. The recipe role gets none of them.
 //!
+//! Migration 4 (wire-protocol spec, sections 6, 7 and 10) adds the logins and the audit log to schema
+//! `bhdata_control`: `logins` (the SCRAM verifier, the four permissions, the recipe allow-list, the
+//! limits, the disabled flag) and `audit` (one row per login event and per change to a login). Only
+//! the admin role reaches them: it reads and inserts, changes a login's own columns (never its name or
+//! its creation), and never deletes or edits an audit row.
+//!
 //! Migrations are append-only: a released version is never edited. Slice B runs each as the owner
 //! role (`SET ROLE bhdata_owner`), in one transaction together with [`record_version`]. A function
 //! that refuses a call raises [`crate::errors::SQLSTATE_BHDATA`].
@@ -28,7 +34,7 @@ use crate::errors::SQLSTATE_BHDATA;
 use crate::roles::{Role, SCHEMA_CONTROL, SCHEMA_INTERNAL};
 
 /// The schema version this release writes into `meta`.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// One numbered step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +120,10 @@ pub fn migrations() -> Vec<Migration> {
             version: 3,
             statements: v3(),
         },
+        Migration {
+            version: 4,
+            statements: v4(),
+        },
     ]
 }
 
@@ -131,6 +141,75 @@ pub fn pending(current: Option<u32>) -> Result<Vec<Migration>, TooNew> {
         .into_iter()
         .filter(|m| m.version > found)
         .collect())
+}
+
+/// The audit events the table accepts: what the gateway reports, and what the control plane writes
+/// when it changes a login.
+pub const AUDIT_EVENTS: [&str; 11] = [
+    "login_succeeded",
+    "login_failed",
+    "locked_out",
+    "lockout_released",
+    "login_created",
+    "login_disabled",
+    "login_enabled",
+    "password_changed",
+    "permissions_changed",
+    "recipes_changed",
+    "limits_changed",
+];
+
+/// Migration 4: the logins and the audit log (wire-protocol spec, sections 6, 7 and 10).
+///
+/// `recipes` is the allow-list when `all_recipes` is false; with `all_recipes` (the `*` of the spec)
+/// the list must be empty. An audit row's `name` is whatever the client sent, so it is held to a size
+/// only, not to the login id shape.
+fn v4() -> Vec<String> {
+    let c = SCHEMA_CONTROL;
+    let events = AUDIT_EVENTS
+        .iter()
+        .map(|e| format!("'{e}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![
+        format!(
+            "CREATE TABLE {c}.logins (\
+               login_id text PRIMARY KEY CHECK (login_id ~ '^[A-Za-z0-9._:-]{{1,{MAX_LOGIN_LEN}}}$'), \
+               salt bytea NOT NULL CHECK (octet_length(salt) BETWEEN 1 AND 64), \
+               iterations integer NOT NULL CHECK (iterations BETWEEN 1 AND 10000000), \
+               stored_key bytea NOT NULL CHECK (octet_length(stored_key) = 32), \
+               server_key bytea NOT NULL CHECK (octet_length(server_key) = 32), \
+               can_execute boolean NOT NULL DEFAULT false, \
+               can_register boolean NOT NULL DEFAULT false, \
+               can_admin boolean NOT NULL DEFAULT false, \
+               can_sql boolean NOT NULL DEFAULT false, \
+               all_recipes boolean NOT NULL DEFAULT false, \
+               recipes text[] NOT NULL DEFAULT '{{}}' \
+                 CHECK (array_position(recipes, NULL) IS NULL \
+                        AND NOT (all_recipes AND cardinality(recipes) > 0) \
+                        AND array_to_string(recipes, ',') ~ '^([a-z][a-z0-9_]{{0,39}}(,[a-z][a-z0-9_]{{0,39}})*)?$'), \
+               rate_per_sec integer CHECK (rate_per_sec >= 1), \
+               rate_burst integer CHECK (rate_burst >= 1), \
+               max_connections integer CHECK (max_connections >= 1), \
+               disabled boolean NOT NULL DEFAULT false, \
+               created_at timestamptz NOT NULL DEFAULT now(), \
+               created_by text NOT NULL CHECK (octet_length(created_by) BETWEEN 1 AND {MAX_LOGIN_LEN}), \
+               updated_at timestamptz NOT NULL DEFAULT now())"
+        ),
+        format!(
+            "CREATE TABLE {c}.audit (\
+               id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, \
+               at timestamptz NOT NULL, \
+               event text NOT NULL CHECK (event IN ({events})), \
+               name text NOT NULL CHECK (octet_length(name) <= 1024), \
+               name_exists boolean, \
+               source inet, \
+               actor text CHECK (octet_length(actor) BETWEEN 1 AND {MAX_LOGIN_LEN}), \
+               detail text CHECK (octet_length(detail) <= 4096))"
+        ),
+        format!("CREATE INDEX audit_at ON {c}.audit (at)"),
+        format!("CREATE INDEX audit_name ON {c}.audit (name, id)"),
+    ]
 }
 
 fn v2() -> Vec<String> {
@@ -466,6 +545,18 @@ pub fn object_grants() -> Vec<String> {
     ));
     out.push(format!(
         "GRANT UPDATE (status) ON {c}.recipes TO {}",
+        Role::Admin
+    ));
+    // The logins and the audit log (migration 4): the admin role reads and inserts both, changes only the
+    // columns of a login that are meant to change, and never deletes or edits an audit row.
+    out.push(format!(
+        "GRANT SELECT, INSERT ON {c}.logins, {c}.audit TO {}",
+        Role::Admin
+    ));
+    out.push(format!(
+        "GRANT UPDATE (salt, iterations, stored_key, server_key, can_execute, can_register, can_admin, \
+         can_sql, all_recipes, recipes, rate_per_sec, rate_burst, max_connections, disabled, updated_at) \
+         ON {c}.logins TO {}",
         Role::Admin
     ));
     for (name, args) in FUNCTIONS {
@@ -810,5 +901,41 @@ mod tests {
         assert!(
             sql.contains("'schema_version', '7'") && sql.contains("ON CONFLICT (key) DO UPDATE")
         );
+    }
+
+    #[test]
+    fn migration_four_makes_the_logins_and_the_audit_log_and_nothing_else() {
+        let all = migrations();
+        let sql = all[3].statements.join("\n");
+        assert_eq!(all[3].version, 4);
+        assert!(sql.contains("CREATE TABLE bhdata_control.logins"));
+        assert!(sql.contains("CREATE TABLE bhdata_control.audit"));
+        for column in ["salt bytea", "stored_key bytea", "server_key bytea"] {
+            assert!(sql.contains(column), "{column}");
+        }
+        assert!(!sql.contains("password text") && !sql.contains("password bytea"));
+        assert!(sql.contains(&format!("{{1,{MAX_LOGIN_LEN}}}")));
+        for event in AUDIT_EVENTS {
+            assert!(sql.contains(&format!("'{event}'")), "{event}");
+        }
+        assert!(!sql.contains("ALTER TABLE") && !sql.contains("DROP"));
+    }
+
+    #[test]
+    fn the_admin_reads_and_inserts_logins_and_audit_and_may_not_delete_or_edit_an_audit_row() {
+        let grants = object_grants();
+        assert!(grants.contains(
+            &"GRANT SELECT, INSERT ON bhdata_control.logins, bhdata_control.audit TO bhdata_admin"
+                .to_string()
+        ));
+        let update = grants
+            .iter()
+            .find(|g| g.starts_with("GRANT UPDATE (salt"))
+            .expect("a column-level update grant on logins");
+        assert!(update.ends_with("ON bhdata_control.logins TO bhdata_admin"));
+        assert!(!update.contains("login_id") && !update.contains("created_"));
+        assert!(!grants
+            .iter()
+            .any(|g| g.contains("UPDATE") && g.contains("bhdata_control.audit")));
     }
 }

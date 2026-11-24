@@ -90,6 +90,7 @@ dependencies = [
  "bhdata-api",
  "bhdata-engine",
  "bhdata-pg",
+ "bhdata-proto",
  "bhdata-recipe",
  "bhdata-schema",
  "bhdata-types",

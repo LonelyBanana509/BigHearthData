@@ -133,7 +133,7 @@ fn a_schema_becomes_tables_and_recipes_are_versioned_idempotent_and_exactly_gran
     let report = pg.boot();
     assert_eq!(
         (report.schema_version, report.applied.as_slice()),
-        (3, &[1, 2, 3][..])
+        (4, &[1, 2, 3, 4][..])
     );
 
     // ---- no schema yet ----
@@ -444,7 +444,7 @@ fn a_schema_becomes_tables_and_recipes_are_versioned_idempotent_and_exactly_gran
     let report = pg.boot();
     assert_eq!(
         (report.schema_version, report.applied.is_empty()),
-        (3, true)
+        (4, true)
     );
     assert_eq!(blocking::list(&target).expect("list"), before);
     assert_eq!(

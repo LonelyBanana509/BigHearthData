@@ -26,6 +26,8 @@ const USAGE: &str = "usage: bhdatactl status [--config <absolute path>]\n\
        bhdatactl schema apply <file> [--config <absolute path>]\n\
        bhdatactl recipe register <file> [--config <absolute path>]\n\
        bhdatactl recipe list [--config <absolute path>]\n\
+       bhdatactl login create|set-password|grant|revoke|limit|disable|enable|list|audit ...\n\
+                      (see `login.rs`; a password is asked for or read from --password-file)\n\
        bhdatactl call <recipe file> --schema <schema file> --subject <id> [--counterparty <id>]\n\
                       [--arg name=value]... [--request-id <id>] [--config <absolute path>]";
 
@@ -55,6 +57,8 @@ pub enum Command {
     },
     /// `call <recipe file> ...`.
     Call(crate::call::CallArgs),
+    /// `login ...`.
+    Login(crate::login::LoginArgs),
 }
 
 /// Reads the command line (without the program name).
@@ -85,6 +89,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, String> {
             rest: args[2..].to_vec(),
         }),
         (Some("call"), _) => Ok(Command::Call(crate::call::parse(&args[1..])?)),
+        (Some("login"), _) => Ok(Command::Login(crate::login::parse(&args[1..])?)),
         (None, _) => Err("no command given".to_string()),
         _ => Err("unknown command".to_string()),
     }
@@ -128,13 +133,15 @@ pub fn render_schema(outcome: &SchemaOutcome) -> String {
     }
 }
 
-struct Setup {
-    target: bhdata_control::Target,
-    limits: Limits,
-    by: String,
+pub(crate) struct Setup {
+    pub(crate) target: bhdata_control::Target,
+    pub(crate) limits: Limits,
+    pub(crate) by: String,
+    /// `gateway.scram_iterations`, for a new verifier.
+    pub(crate) scram_iterations: u32,
 }
 
-fn setup(rest: &[OsString]) -> Result<Setup, String> {
+pub(crate) fn setup(rest: &[OsString]) -> Result<Setup, String> {
     let path = host::config_path_from_args(rest)?;
     let config = host::load_config(&path).map_err(|e| e.to_string())?;
     let spec = host::spec_from(&config, SERVICE_USER.to_string()).map_err(|e| e.to_string())?;
@@ -143,6 +150,7 @@ fn setup(rest: &[OsString]) -> Result<Setup, String> {
         target: host::target_of(&spec),
         limits: Limits::from(&config.recipes),
         by,
+        scram_iterations: config.gateway.scram_iterations,
     })
 }
 
@@ -173,6 +181,7 @@ fn run(command: &Command) -> Result<Vec<String>, String> {
             Ok(render_list(&rows))
         }
         Command::Call(call) => crate::call::run(call),
+        Command::Login(login) => crate::login::run(login),
     }
 }
 

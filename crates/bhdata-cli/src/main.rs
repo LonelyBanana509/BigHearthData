@@ -5,6 +5,7 @@
 
 mod call;
 mod commands;
+mod login;
 
 use std::ffi::OsString;
 use std::process::ExitCode;

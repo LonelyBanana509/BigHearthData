@@ -14,6 +14,7 @@ workspace = true
 bhdata-api = { workspace = true }
 bhdata-recipe = { workspace = true }
 bhdata-pg = { workspace = true }
+bhdata-proto = { workspace = true }
 bhdata-schema = { workspace = true }
 bhdata-types = { workspace = true }
 thiserror = { workspace = true }
