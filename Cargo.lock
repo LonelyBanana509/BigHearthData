@@ -81,6 +81,14 @@ name = "bhdata-client"
 version = "0.0.0"
 dependencies = [
  "bhdata-proto",
+ "getrandom 0.4.3",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
