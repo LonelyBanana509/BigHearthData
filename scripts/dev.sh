@@ -7,6 +7,8 @@
 #   bash scripts/dev.sh --no-install    stop after the gate (no sudo packaging/install.sh)
 #   bash scripts/dev.sh --skip-copy     work on the copy that is already in WSL
 #   bash scripts/dev.sh --dest <dir>    copy somewhere else (default ~/projects/BigHearthData)
+#   bash scripts/dev.sh --fuzz          also run the four fuzz targets (test W16), 60 seconds each
+#   bash scripts/dev.sh --fuzz-secs 300 ... with another time per target (implies --fuzz)
 #
 # What it runs, in order:
 #   1. scripts/copy-to-wsl.sh            (skipped when you run it from the WSL copy itself)
@@ -16,7 +18,9 @@
 #   4. the real-server tests again, only if step 3 had to skip them
 #        PostgreSQL 17 is installed by the installer, which runs after the gate, so on a fresh
 #        machine the gate skips them. This step runs them once the installer has put it there.
-#   5. a smoke test of the installed service (`bhdatactl status`), reported but never fatal
+#   5. with --fuzz: the fuzz targets in fuzz/ (frame, json, message, scram). They need nightly Rust
+#      and cargo-fuzz, which this step installs; they are not part of the gate
+#   6. a smoke test of the installed service (`bhdatactl status`), reported but never fatal
 #
 # It exits non-zero when the real-server tests did not run, so a green run always means they did.
 set -euo pipefail
@@ -26,6 +30,8 @@ dest="$HOME/projects/$(basename "$here")"
 do_clean=yes
 do_install=yes
 do_copy=yes
+do_fuzz=no
+fuzz_secs=60
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "dev.sh: $*" >&2; exit 1; }
@@ -35,12 +41,20 @@ while [ $# -gt 0 ]; do
         --no-clean) do_clean=no ;;
         --no-install) do_install=no ;;
         --skip-copy) do_copy=no ;;
+        --fuzz) do_fuzz=yes ;;
+        --fuzz-secs)
+            [ $# -ge 2 ] || die "--fuzz-secs needs a number of seconds"
+            case "$2" in '' | *[!0-9]* | 0) die "--fuzz-secs needs a whole number above 0" ;; esac
+            do_fuzz=yes
+            fuzz_secs="$2"
+            shift
+            ;;
         --dest)
             [ $# -ge 2 ] || die "--dest needs a folder"
             dest="$2"
             shift
             ;;
-        -h | --help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
     shift
@@ -112,6 +126,16 @@ elif [ -x "$pg_bin/initdb" ]; then
     cargo test --workspace --locked -- --ignored --test-threads=1
 else
     real_server=skipped
+fi
+
+if [ "$do_fuzz" = yes ]; then
+    step "fuzz targets (nightly Rust and cargo-fuzz), ${fuzz_secs}s each"
+    rustup toolchain install nightly --profile minimal
+    command -v cargo-fuzz >/dev/null 2>&1 || cargo install --locked cargo-fuzz
+    for target in frame json message scram; do
+        echo "--- fuzz $target"
+        cargo +nightly fuzz run "$target" -- -max_total_time="$fuzz_secs"
+    done
 fi
 
 if [ "$do_install" = yes ]; then
