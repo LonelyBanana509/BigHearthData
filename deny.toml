@@ -14,6 +14,8 @@ yanked = "deny"
 # Likely candidates when a new dependency needs them: BSD-2-Clause, BSD-3-Clause, ISC, Zlib.
 allow = [
     "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
     "MIT",
     "Unicode-3.0",
 ]
@@ -23,6 +25,9 @@ confidence-threshold = 0.9
 multiple-versions = "deny"
 # Two versions of a crate are allowed only when a dependency we do not control needs the second one.
 skip = [
+    # getrandom 0.2 and windows-sys 0.52 (ring, through rustls) next to the newer lines the rest of the tree uses.
+    { name = "getrandom", reason = "ring 0.17 needs getrandom 0.2" },
+    { name = "windows-sys", reason = "ring 0.17 needs an older windows-sys than tokio and mio" },
     # syn 2.x (tracing-attributes) next to syn 3.x (async-trait, serde_derive and others).
     { name = "syn", reason = "upstream proc-macro crates are on different major versions" },
     # wasi 0.11 (mio, through tokio) next to wasi 0.14 (wasite, through whoami, through tokio-postgres).

@@ -13,3 +13,14 @@ workspace = true
 [dependencies]
 bhdata-proto = { workspace = true }
 bhdata-api = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
+tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.13"
+# Only so a test can offer TLS 1.2 and see the gateway refuse it; the library never enables it.
+rustls = { workspace = true, features = ["tls12"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
